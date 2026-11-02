@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "mediaconv"
 version = "0.1.0"
-description = "照片與影片批次格式轉換命令列工具"
+description = "照片、影片批次格式轉換與壓縮（含 PDF）命令列工具"
 readme = "README.md"
 requires-python = ">=3.9"
 dependencies = [
@@ -13,6 +13,7 @@ dependencies = [
     "pillow-heif>=0.18",
     "tqdm>=4.60",
     "imageio-ffmpeg>=0.5",
+    "pikepdf>=8",
 ]
 
 [project.optional-dependencies]

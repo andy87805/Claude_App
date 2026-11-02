@@ -32,15 +32,45 @@
       <p class="sub">照片、影片直接在手機上轉換，檔案不會上傳到任何地方。</p>
     </header>
 
+    <div class="seg seg-full mode" role="radiogroup" aria-label="模式" data-setting="mode">
+      <button type="button" data-value="convert">轉換格式</button>
+      <button type="button" data-value="compress">壓縮檔案</button>
+    </div>
+
     <label class="picker" id="picker">
       <input type="file" id="fileInput" multiple
              accept="image/*,video/*,.heic,.heif,image/heic,image/heif,.mov,.mkv,.webm">
       <span class="picker-icon" aria-hidden="true">＋</span>
-      <span class="picker-text">選擇照片或影片</span>
+      <span class="picker-text" id="pickerText">選擇照片或影片</span>
       <span class="picker-hint">可一次選多個</span>
     </label>
 
-    <section class="card" aria-labelledby="photoTitle">
+    <section class="card compress-only" aria-labelledby="compressTitle">
+      <h2 id="compressTitle">壓縮</h2>
+      <div class="seg seg-full" role="radiogroup" aria-label="壓縮程度" data-setting="level">
+        <button type="button" data-value="light">輕度</button>
+        <button type="button" data-value="standard">標準</button>
+        <button type="button" data-value="strong">強力</button>
+      </div>
+      <p class="note" id="levelNote"></p>
+      <div class="row">
+        <label class="label" for="targetSize">每個檔案上限</label>
+        <select id="targetSize" data-setting="targetSize">
+          <option value="">不限</option>
+          <option value="512000">500 KB</option>
+          <option value="1048576">1 MB</option>
+          <option value="2097152">2 MB</option>
+          <option value="5242880">5 MB</option>
+          <option value="10485760">10 MB</option>
+          <option value="26214400">25 MB（email 附件）</option>
+          <option value="52428800">50 MB</option>
+          <option value="104857600">100 MB</option>
+        </select>
+      </div>
+      <p class="note">照片會存成 JPG、影片存成 MP4。壓縮後如果沒有變小，會直接保留原檔。</p>
+    </section>
+
+    <section class="card convert-only" aria-labelledby="photoTitle">
       <h2 id="photoTitle">照片</h2>
       <div class="row">
         <span class="label">轉成</span>
@@ -66,7 +96,7 @@
       </div>
     </section>
 
-    <section class="card" aria-labelledby="videoTitle">
+    <section class="card convert-only" aria-labelledby="videoTitle">
       <h2 id="videoTitle">影片</h2>
       <div class="row">
         <span class="label">轉成</span>

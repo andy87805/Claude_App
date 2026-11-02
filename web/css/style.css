@@ -156,6 +156,8 @@ output { color: var(--muted); font-variant-numeric: tabular-nums; margin-left: 4
 }
 
 .note { margin: 8px 0 0; color: var(--muted); font-size: 13px; }
+.mode { margin-bottom: 12px; }
+.mode button { min-height: 36px; font-size: 15px; }
 
 .list-head { display: flex; align-items: center; justify-content: space-between; margin-top: 8px; }
 .list-head h2 { margin: 0; }
@@ -206,7 +208,7 @@ output { color: var(--muted); font-variant-numeric: tabular-nums; margin-left: 4
 }
 .link { border: 0; background: none; color: var(--accent); cursor: pointer; padding: 4px; font-size: 15px; }
 
-.summary { text-align: center; font-weight: 600; margin: 16px 0 0; }
+.summary { text-align: center; font-weight: 600; margin: 16px 0 0; white-space: pre-line; }
 .footer { color: var(--muted); font-size: 12px; text-align: center; margin-top: 20px; }
 
 .actions {

@@ -1,4 +1,4 @@
-// 照片轉換：瀏覽器解碼 -> canvas 縮放 -> 編碼成 JPG/PNG/WebP，再把 EXIF 放回去。
+// 照片轉換與壓縮：瀏覽器解碼 -> canvas 縮放 -> 編碼成 JPG/PNG/WebP，再把 EXIF 放回去。
 
 import { extractExif, patchExif, insertExifJpeg, insertExifPng, insertExifWebp } from './exif.js';
 
@@ -6,6 +6,13 @@ export const IMAGE_FORMATS = {
   jpg: { mime: 'image/jpeg', ext: '.jpg' },
   png: { mime: 'image/png', ext: '.png' },
   webp: { mime: 'image/webp', ext: '.webp' },
+};
+
+// 壓縮程度：[最長邊, JPG 品質]
+export const COMPRESS_PRESETS = {
+  light: [3000, 80],
+  standard: [2048, 75],
+  strong: [1280, 65],
 };
 
 // iPhone Safari 的 canvas 面積上限（約 1600 萬像素）
@@ -36,27 +43,31 @@ async function decodeWithBrowser(blob) {
   }
 }
 
-async function decode(file, bytes) {
+/** 讀取照片：回傳原始位元組、可繪製的影像與尺寸。 */
+async function openImage(file) {
+  const bytes = new Uint8Array(await file.arrayBuffer());
+  let source;
   try {
-    return await decodeWithBrowser(file);
-  } catch (err) {
+    source = await decodeWithBrowser(file);
+  } catch {
     // 非 Safari 的瀏覽器多半不能直接讀 HEIC，改用內附的 libheif 解碼
-    if (isHeicLike(file, bytes)) {
-      const { heicTo } = await import('../vendor/heic-to.js');
-      return heicTo({ blob: file, type: 'bitmap' });
+    if (!isHeicLike(file, bytes)) {
+      throw new Error('無法讀取這張照片（檔案可能損壞，或是瀏覽器不支援這種格式）');
     }
-    throw new Error('無法讀取這張照片（檔案可能損壞，或是瀏覽器不支援這種格式）');
+    const { heicTo } = await import('../vendor/heic-to.js');
+    source = await heicTo({ blob: file, type: 'bitmap' });
   }
+  const width = source.naturalWidth || source.width;
+  const height = source.naturalHeight || source.height;
+  if (!width || !height) throw new Error('無法讀取照片尺寸');
+  return { bytes, source, width, height };
 }
 
-function sizeOf(source) {
-  return {
-    width: source.naturalWidth || source.width,
-    height: source.naturalHeight || source.height,
-  };
+function closeImage(img) {
+  img.source.close?.();
 }
 
-function targetSize(width, height, maxSize, maxArea) {
+function fitSize(width, height, maxSize, maxArea) {
   let scale = 1;
   if (maxSize && Math.max(width, height) > maxSize) scale = maxSize / Math.max(width, height);
   if (maxArea && width * height * scale * scale > maxArea) scale = Math.sqrt(maxArea / (width * height));
@@ -87,12 +98,50 @@ function draw(source, width, height, flatten) {
   return canvas;
 }
 
-function releaseCanvas(canvas) {
+export function releaseCanvas(canvas) {
   // iOS 對 canvas 總記憶體有限制，用完要立刻釋放
   if (canvas) {
     canvas.width = 0;
     canvas.height = 0;
   }
+}
+
+/**
+ * 把照片畫到指定最長邊的 canvas 上，並確認瀏覽器真的能輸出（iPhone 有面積上限）。
+ * 回傳 { canvas, width, height, blob, warnings }。
+ */
+async function render(img, maxSize, mime, quality, flatten) {
+  const warnings = [];
+  let { width, height } = fitSize(img.width, img.height, maxSize);
+  let canvas = draw(img.source, width, height, flatten);
+  let blob = canvas && (await canvasToBlob(canvas, mime, quality));
+  if (!blob) {
+    releaseCanvas(canvas);
+    ({ width, height } = fitSize(img.width, img.height, maxSize, IOS_MAX_CANVAS_AREA));
+    canvas = draw(img.source, width, height, flatten);
+    blob = canvas && (await canvasToBlob(canvas, mime, quality));
+    if (!blob) throw new Error('照片太大，瀏覽器無法處理');
+    warnings.push(`照片太大，已縮小為 ${width}×${height}（iPhone 瀏覽器的限制）`);
+  }
+  return { canvas, width, height, blob, warnings };
+}
+
+/** 依設定處理 EXIF：保留、移除 GPS 或全部移除。回傳新的 blob。 */
+async function applyExif(blob, img, format, width, height, metadata, warnings) {
+  if (metadata === 'none') return blob;
+  const exif = extractExif(img.bytes);
+  if (!exif) return blob;
+  const patched = patchExif(exif, { width, height, removeGps: metadata === 'nogps' });
+  const out = new Uint8Array(await blob.arrayBuffer());
+  let result;
+  if (format === 'jpg') result = insertExifJpeg(out, patched);
+  else if (format === 'png') result = insertExifPng(out, patched);
+  else result = insertExifWebp(out, patched, width, height);
+  if (!result.ok) {
+    warnings.push('EXIF 資料太大，無法保留');
+    return blob;
+  }
+  return new Blob([result.bytes], { type: IMAGE_FORMATS[format].mime });
 }
 
 async function encodeWebpFallback(canvas, quality) {
@@ -112,48 +161,71 @@ async function encodeWebpFallback(canvas, quality) {
 export async function convertImage(file, opts) {
   const fmt = IMAGE_FORMATS[opts.format];
   if (!fmt) throw new Error(`不支援的格式：${opts.format}`);
-  const warnings = [];
-  const bytes = new Uint8Array(await file.arrayBuffer());
-  const source = await decode(file, bytes);
-  const { width: srcW, height: srcH } = sizeOf(source);
-  if (!srcW || !srcH) throw new Error('無法讀取照片尺寸');
-
-  const quality = opts.quality / 100;
-  const flatten = opts.format === 'jpg';
-  let { width, height } = targetSize(srcW, srcH, opts.maxSize);
-  let canvas = draw(source, width, height, flatten);
-  let blob = canvas && (await canvasToBlob(canvas, fmt.mime, quality));
-
-  if (!blob) {
-    // iPhone 對 canvas 有面積上限，超過就縮小到上限內再試
-    releaseCanvas(canvas);
-    ({ width, height } = targetSize(srcW, srcH, opts.maxSize, IOS_MAX_CANVAS_AREA));
-    canvas = draw(source, width, height, flatten);
-    blob = canvas && (await canvasToBlob(canvas, fmt.mime, quality));
-    if (!blob) throw new Error('照片太大，瀏覽器無法處理');
-    warnings.push(`照片太大，已縮小為 ${width}×${height}（iPhone 瀏覽器的限制）`);
-  }
-
-  // Safari 的 canvas 不會輸出 WebP（會偷偷給 PNG），改用內附的 WebP 編碼器
-  if (opts.format === 'webp' && blob.type !== 'image/webp') {
-    blob = await encodeWebpFallback(canvas, opts.quality);
-  }
-  releaseCanvas(canvas);
-  if (source.close) source.close();
-
-  if (opts.metadata !== 'none') {
-    const exif = extractExif(bytes);
-    if (exif) {
-      const patched = patchExif(exif, { width, height, removeGps: opts.metadata === 'nogps' });
-      const out = new Uint8Array(await blob.arrayBuffer());
-      let result;
-      if (opts.format === 'jpg') result = insertExifJpeg(out, patched);
-      else if (opts.format === 'png') result = insertExifPng(out, patched);
-      else result = insertExifWebp(out, patched, width, height);
-      if (result.ok) blob = new Blob([result.bytes], { type: fmt.mime });
-      else warnings.push('EXIF 資料太大，無法保留');
+  const img = await openImage(file);
+  try {
+    const r = await render(img, opts.maxSize, fmt.mime, opts.quality / 100, opts.format === 'jpg');
+    let blob = r.blob;
+    // Safari 的 canvas 不會輸出 WebP（會偷偷給 PNG），改用內附的 WebP 編碼器
+    if (opts.format === 'webp' && blob.type !== 'image/webp') {
+      blob = await encodeWebpFallback(r.canvas, opts.quality);
     }
+    releaseCanvas(r.canvas);
+    blob = await applyExif(blob, img, opts.format, r.width, r.height, opts.metadata, r.warnings);
+    return { blob, ext: fmt.ext, width: r.width, height: r.height, warnings: r.warnings };
+  } finally {
+    closeImage(img);
   }
+}
 
-  return { blob, ext: fmt.ext, width, height, warnings };
+/**
+ * 壓縮一張照片成 JPG。
+ * - 先依壓縮程度的尺寸與品質處理
+ * - 有設定上限而且還是太大：找出符合大小的最高品質，品質降到 40 還太大就再縮小尺寸
+ * @param {{level:'light'|'standard'|'strong', targetSize:number|null, metadata:string}} opts
+ */
+export async function compressImage(file, opts) {
+  const [maxSize, quality] = COMPRESS_PRESETS[opts.level] || COMPRESS_PRESETS.standard;
+  // 先照壓縮程度處理；有設定上限而且超過時，才再壓得更小
+  const first = await convertImage(file, { format: 'jpg', quality, maxSize, metadata: opts.metadata });
+  if (!opts.targetSize || first.blob.size <= opts.targetSize) return first;
+
+  const img = await openImage(file);
+  try {
+    // EXIF 也佔空間，要預留
+    const exif = opts.metadata === 'none' ? null : extractExif(img.bytes);
+    const budget = opts.targetSize - (exif ? exif.length + 16 : 0);
+    let longest = Math.min(maxSize, Math.max(img.width, img.height));
+    let best = null;
+    const warnings = [];
+
+    for (let round = 0; round < 8 && !best; round++) {
+      const r = await render(img, longest, 'image/jpeg', 0.9, true);
+      warnings.push(...r.warnings.filter((w) => !warnings.includes(w)));
+      let lo = 40;
+      let hi = 90;
+      while (lo <= hi) {
+        const q = Math.floor((lo + hi) / 2);
+        const blob = await canvasToBlob(r.canvas, 'image/jpeg', q / 100);
+        if (blob.size <= budget) {
+          best = { blob, width: r.width, height: r.height };
+          lo = q + 1;
+        } else {
+          hi = q - 1;
+        }
+      }
+      if (!best && round === 7) {
+        best = { blob: await canvasToBlob(r.canvas, 'image/jpeg', 0.4), width: r.width, height: r.height };
+        warnings.push('無法壓到目標大小以下，已盡量壓縮');
+      }
+      releaseCanvas(r.canvas);
+      longest = Math.floor(Math.min(longest, Math.max(r.width, r.height)) * 0.75);
+    }
+    if (Math.max(best.width, best.height) < Math.min(maxSize, Math.max(img.width, img.height)) && !warnings.length) {
+      warnings.push(`為了符合目標大小，尺寸縮小為 ${best.width}×${best.height}`);
+    }
+    const blob = await applyExif(best.blob, img, 'jpg', best.width, best.height, opts.metadata, warnings);
+    return { blob, ext: '.jpg', width: best.width, height: best.height, warnings };
+  } finally {
+    closeImage(img);
+  }
 }

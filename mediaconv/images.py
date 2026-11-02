@@ -89,6 +89,37 @@ def _resize(img: Image.Image, max_size: int | None) -> Image.Image:
     return img.resize(new_size, Image.Resampling.LANCZOS)
 
 
+def load_image(src: Path, max_size: int | None, pil_format: str):
+    """讀取照片、依 EXIF 轉正、縮小、轉成適合輸出格式的色彩模式。回傳 (影像, EXIF, ICC)。"""
+    try:
+        with Image.open(src) as opened:
+            opened.load()
+            exif = opened.getexif()
+            icc = opened.info.get("icc_profile")
+            img = ImageOps.exif_transpose(opened) or opened
+            img = _resize(img, max_size)
+            img = _prepare_mode(img, pil_format)
+    except Exception as exc:
+        raise ImageConversionError(f"無法讀取照片：{exc}") from exc
+    return img, exif, icc
+
+
+def metadata_kwargs(exif, icc, pil_format: str, keep_metadata: bool) -> dict:
+    kwargs: dict = {}
+    if keep_metadata:
+        if pil_format in _EXIF_CAPABLE and len(exif):
+            if ORIENTATION_TAG in exif:
+                exif[ORIENTATION_TAG] = 1
+            kwargs["exif"] = exif.tobytes()
+        if icc and pil_format != "BMP":
+            kwargs["icc_profile"] = icc
+    return kwargs
+
+
+def jpeg_kwargs(quality: int) -> dict:
+    return {"quality": quality, "optimize": True, "subsampling": "4:2:0" if quality < 90 else "4:4:4"}
+
+
 def convert_image(
     src: Path,
     dst: Path,
@@ -108,30 +139,11 @@ def convert_image(
     if pil_format == "HEIF" and not HEIF_AVAILABLE:
         raise ImageConversionError("未安裝 pillow-heif，無法輸出 HEIC")
 
-    try:
-        with Image.open(src) as opened:
-            opened.load()
-            exif = opened.getexif()
-            icc = opened.info.get("icc_profile")
-            img = ImageOps.exif_transpose(opened) or opened
-            img = _resize(img, max_size)
-            img = _prepare_mode(img, pil_format)
-    except ImageConversionError:
-        raise
-    except Exception as exc:
-        raise ImageConversionError(f"無法讀取照片：{exc}") from exc
-
-    save_kwargs: dict = {}
-    if keep_metadata:
-        if pil_format in _EXIF_CAPABLE and len(exif):
-            if ORIENTATION_TAG in exif:
-                exif[ORIENTATION_TAG] = 1
-            save_kwargs["exif"] = exif.tobytes()
-        if icc and pil_format != "BMP":
-            save_kwargs["icc_profile"] = icc
+    img, exif, icc = load_image(src, max_size, pil_format)
+    save_kwargs = metadata_kwargs(exif, icc, pil_format, keep_metadata)
 
     if pil_format == "JPEG":
-        save_kwargs.update(quality=quality, optimize=True, subsampling="4:2:0" if quality < 90 else "4:4:4")
+        save_kwargs.update(jpeg_kwargs(quality))
     elif pil_format in ("WEBP", "HEIF", "AVIF"):
         save_kwargs["quality"] = quality
     elif pil_format == "PNG":

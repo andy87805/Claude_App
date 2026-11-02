@@ -45,8 +45,25 @@ def video_info(path):
     }
 
 
+def pdf_info(path):
+    import pikepdf
+
+    with pikepdf.open(path) as pdf:
+        filters, fonts = [], 0
+        for page in pdf.pages:
+            res = page.get("/Resources", {})
+            fonts += len(res.get("/Font", {}))
+            for _, img in page.get_images().items():
+                f = img.get("/Filter")
+                filters.append(str(f[0] if isinstance(f, pikepdf.Array) else f))
+        return {"kind": "pdf", "pages": len(pdf.pages), "filters": filters, "fonts": fonts}
+
+
 if __name__ == "__main__":
     path = sys.argv[1]
+    if path.lower().endswith(".pdf"):
+        print(json.dumps(pdf_info(path)))
+        sys.exit(0)
     try:
         info = image_info(path)
         if info["format"] == "GIF":

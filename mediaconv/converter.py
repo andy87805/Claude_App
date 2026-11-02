@@ -16,7 +16,9 @@ from .formats import (
     is_same_image_format,
     is_same_video_format,
 )
-from . import images, videos
+from . import compress, images, videos
+
+PDF_EXTS = {".pdf"}
 
 # 已經是目標格式時，這些影像編碼可以直接複製、不必重新壓縮
 _COPYABLE_VCODECS = {"mp4": {"h264"}, "mov": {"h264"}, "mkv": {"h264"}, "webm": {"vp9"}, "gif": {"gif"}}
@@ -41,21 +43,27 @@ class Options:
     duration: float | None = None
     on_exists: str = "skip"  # skip / rename / overwrite
     reencode: bool = False
+    # 壓縮模式
+    compress: bool = False
+    level: str = "standard"  # light / standard / strong
+    target_size: int | None = None  # 位元組
 
 
 @dataclass
 class Job:
     src: Path
     dst: Path
-    kind: str  # "image" / "video"
-    action: str = "convert"  # "convert" / "copy" / "skip"
+    kind: str  # "image" / "video" / "pdf"
+    action: str = "convert"  # "convert" / "copy" / "skip"；壓縮後變大時會改成 "kept"
     reason: str = ""
+    notes: list[str] = field(default_factory=list)
 
 
 @dataclass
 class Result:
     converted: list[Job] = field(default_factory=list)
     copied: list[Job] = field(default_factory=list)
+    kept: list[Job] = field(default_factory=list)  # 壓縮後沒有變小，保留原檔
     skipped: list[Job] = field(default_factory=list)
     failed: list[tuple[Job, str]] = field(default_factory=list)
     ignored: int = 0  # 非照片/影片的檔案數
@@ -69,6 +77,8 @@ def classify(path: Path) -> str | None:
         return "image"
     if ext in VIDEO_INPUT_EXTS:
         return "video"
+    if ext in PDF_EXTS:
+        return "pdf"
     return None
 
 
@@ -80,7 +90,9 @@ def _is_relative_to(path: Path, other: Path) -> bool:
         return False
 
 
-def scan(inputs: Iterable[Path], output_dir: Path, recursive: bool = True) -> tuple[list[tuple[Path, Path]], int]:
+def scan(
+    inputs: Iterable[Path], output_dir: Path, recursive: bool = True, include_pdf: bool = False
+) -> tuple[list[tuple[Path, Path]], int]:
     """回傳 [(檔案, 相對輸出路徑)] 與被忽略的檔案數。會排除輸出資料夾本身。"""
     out_resolved = output_dir.resolve()
     found: list[tuple[Path, Path]] = []
@@ -102,7 +114,7 @@ def scan(inputs: Iterable[Path], output_dir: Path, recursive: bool = True) -> tu
             raise FileNotFoundError(f"找不到：{inp}")
         for path, rel in candidates:
             ext = path.suffix.lower()
-            if ext in IMAGE_INPUT_EXTS or ext in VIDEO_INPUT_EXTS:
+            if ext in IMAGE_INPUT_EXTS or ext in VIDEO_INPUT_EXTS or (include_pdf and ext in PDF_EXTS):
                 found.append((path, rel))
             else:
                 ignored += 1
@@ -119,7 +131,7 @@ def _unique_path(path: Path, taken: set[Path]) -> Path:
 
 
 def plan(inputs: Iterable[Path], opts: Options) -> tuple[list[Job], int]:
-    files, ignored = scan(inputs, opts.output_dir, opts.recursive)
+    files, ignored = scan(inputs, opts.output_dir, opts.recursive, include_pdf=opts.compress)
     jobs: list[Job] = []
     taken: set[Path] = set()
     out_dir = opts.output_dir
@@ -133,8 +145,12 @@ def plan(inputs: Iterable[Path], opts: Options) -> tuple[list[Job], int]:
             continue
         if opts.only == "videos" and kind != "video":
             continue
+        if opts.only == "pdfs" and kind != "pdf":
+            continue
 
-        if kind == "image":
+        if opts.compress:
+            ext = {"image": ".jpg", "video": ".mp4", "pdf": ".pdf"}[kind]
+        elif kind == "image":
             ext = IMAGE_OUTPUT_FORMATS[opts.image_format][1]
         else:
             ext = VIDEO_OUTPUT_FORMATS[opts.video_format]
@@ -155,7 +171,7 @@ def plan(inputs: Iterable[Path], opts: Options) -> tuple[list[Job], int]:
             elif opts.on_exists == "rename":
                 job.dst = _unique_path(dst, taken)
 
-        if job.action == "convert" and not opts.reencode and _can_copy(job, opts):
+        if job.action == "convert" and not opts.compress and not opts.reencode and _can_copy(job, opts):
             job.action = "copy"
 
         taken.add(job.dst)
@@ -194,7 +210,20 @@ def run_job(
     job.dst.parent.mkdir(parents=True, exist_ok=True)
     tmp = _temp_path(job.dst)
     try:
-        if job.action == "copy":
+        if opts.compress:
+            _run_compress(job, opts, tmp, on_video_progress)
+            if tmp.stat().st_size >= job.src.stat().st_size:
+                # 壓縮後沒有比較小，直接保留原檔（副檔名也維持原本的）
+                tmp.unlink()
+                job.action = "kept"
+                job.notes = ["原檔已經很小，保留原檔"]
+                kept_dst = job.dst.with_suffix(job.src.suffix)
+                if kept_dst != job.dst and kept_dst.exists() and opts.on_exists != "overwrite":
+                    kept_dst = _unique_path(kept_dst, set())
+                job.dst = kept_dst
+                tmp = _temp_path(job.dst)
+                shutil.copy2(job.src, tmp)
+        elif job.action == "copy":
             # 直接複製前先確認檔案沒壞
             if job.kind == "image":
                 images.verify_image(job.src)
@@ -223,7 +252,7 @@ def run_job(
                 duration=opts.duration,
             )
         os.replace(tmp, job.dst)
-        if job.action != "copy":
+        if job.action not in ("copy", "kept"):
             _copy_times(job.src, job.dst)
     finally:
         if tmp.exists():
@@ -237,3 +266,17 @@ def _copy_times(src: Path, dst: Path) -> None:
         os.utime(dst, (st.st_atime, st.st_mtime))
     except OSError:
         pass
+
+
+def _run_compress(job: Job, opts: Options, tmp: Path, on_video_progress) -> None:
+    if job.kind == "image":
+        job.notes = compress.compress_image(
+            job.src, tmp, opts.level, opts.target_size, keep_metadata=opts.keep_metadata
+        )
+    elif job.kind == "video":
+        job.notes = compress.compress_video(
+            job.src, tmp, opts.level, opts.target_size,
+            keep_metadata=opts.keep_metadata, on_progress=on_video_progress,
+        )
+    else:
+        job.notes = compress.compress_pdf(job.src, tmp, opts.level, opts.target_size)

@@ -13,6 +13,7 @@ import {
   WebMOutputFormat,
   CanvasSink,
   canEncodeAudio,
+  Quality,
   QUALITY_HIGH,
   QUALITY_MEDIUM,
   QUALITY_LOW,
@@ -95,23 +96,12 @@ export async function convertVideo(file, opts, onProgress = () => {}, control = 
     const size = fitResolution(track.displayWidth, track.displayHeight, shortSide);
     const resizing = size.width !== track.displayWidth || size.height !== track.displayHeight;
 
-    const format =
-      opts.format === 'mov'
-        ? new MovOutputFormat({ fastStart: 'in-memory' })
-        : opts.format === 'webm'
-          ? new WebMOutputFormat()
-          : new Mp4OutputFormat({ fastStart: 'in-memory' });
-    const output = new Output({ format, target: new BufferTarget() });
-
     // 已經是目標編碼、不用縮放、畫質選「高」時，直接搬移影像資料（快又不損失畫質）；
     // 其他情況才重新壓縮。指定 quality 會強制重新壓縮，所以只在需要時才給。
     const quality = QUALITIES[opts.quality] || QUALITY_HIGH;
     const transcode = resizing || track.codec !== fmt.videoCodec || quality !== QUALITY_HIGH;
 
-    const conversion = await Conversion.init({
-      input,
-      output,
-      tracks: 'primary',
+    const { blob, warnings: w } = await encode(file, input, opts.format, {
       video: {
         codec: fmt.videoCodec,
         ...(transcode ? { quality } : {}),
@@ -120,34 +110,8 @@ export async function convertVideo(file, opts, onProgress = () => {}, control = 
       // 聲音能直接搬就直接搬，不行才轉成目標格式
       audio: { codec: fmt.audioCodec },
       trim: opts.start || opts.duration ? trimRange(opts) : undefined,
-      tags: (tags) => cleanTags(tags, opts.metadata),
-      showWarnings: false,
-    });
-
-    for (const d of conversion.discardedTracks) {
-      if (d.track.type === 'audio') warnings.push('聲音無法轉換，輸出的影片沒有聲音');
-    }
-    if (!conversion.isValid) {
-      const reason = conversion.discardedTracks.map((d) => d.reason).join(', ');
-      throw new Error(`這台裝置無法轉換這個影片（${reason}）`);
-    }
-
-    conversion.onProgress = (p) => onProgress(Math.min(1, p));
-    const abort = () => conversion.cancel();
-    control.signal?.addEventListener('abort', abort);
-    try {
-      await conversion.execute();
-    } finally {
-      control.signal?.removeEventListener('abort', abort);
-    }
-    onProgress(1);
-
-    const buffer = output.target.buffer;
-    if (opts.format !== 'webm' && opts.metadata !== 'none') {
-      const created = await readCreationTime(file);
-      if (created) writeCreationTime(buffer, created);
-    }
-    const blob = new Blob([buffer], { type: fmt.mime });
+    }, opts.metadata, onProgress, control);
+    warnings.push(...w);
     return { blob, ext: fmt.ext, width: size.width, height: size.height, warnings };
   } finally {
     input.dispose?.();
@@ -225,6 +189,131 @@ function writeCreationTime(buffer, value) {
     }
   };
   visit(0, buffer.byteLength);
+}
+
+/** 實際執行轉檔：建立輸出、執行、寫回建立時間。 */
+async function encode(file, input, formatKey, conversionOptions, metadata, onProgress, control) {
+  const fmt = VIDEO_FORMATS[formatKey];
+  const warnings = [];
+  const format =
+    formatKey === 'mov'
+      ? new MovOutputFormat({ fastStart: 'in-memory' })
+      : formatKey === 'webm'
+        ? new WebMOutputFormat()
+        : new Mp4OutputFormat({ fastStart: 'in-memory' });
+  const output = new Output({ format, target: new BufferTarget() });
+
+  const conversion = await Conversion.init({
+    input,
+    output,
+    tracks: 'primary',
+    ...conversionOptions,
+    tags: (tags) => cleanTags(tags, metadata),
+    showWarnings: false,
+  });
+
+  for (const d of conversion.discardedTracks) {
+    if (d.track.type === 'audio') warnings.push('聲音無法轉換，輸出的影片沒有聲音');
+  }
+  if (!conversion.isValid) {
+    const reason = conversion.discardedTracks.map((d) => d.reason).join(', ');
+    throw new Error(`這台裝置無法轉換這個影片（${reason}）`);
+  }
+
+  conversion.onProgress = (p) => onProgress(Math.min(1, p));
+  const abort = () => conversion.cancel();
+  control.signal?.addEventListener('abort', abort);
+  try {
+    await conversion.execute();
+  } finally {
+    control.signal?.removeEventListener('abort', abort);
+  }
+  onProgress(1);
+
+  const buffer = output.target.buffer;
+  if (formatKey !== 'webm' && metadata !== 'none') {
+    const created = await readCreationTime(file);
+    if (created) writeCreationTime(buffer, created);
+  }
+  return { blob: new Blob([buffer], { type: fmt.mime }), warnings };
+}
+
+// ---------- 壓縮 ----------
+
+// 壓縮程度：短邊、影像位元率、聲音位元率（null = 聲音直接搬移）
+export const COMPRESS_PRESETS = {
+  light: { short: 1080, bitrate: 5_000_000, audio: null },
+  standard: { short: 720, bitrate: 2_500_000, audio: null },
+  strong: { short: 480, bitrate: 1_000_000, audio: 96_000 },
+};
+
+function shortSideForBitrate(bps) {
+  if (bps >= 4_500_000) return 1080;
+  if (bps >= 2_000_000) return 720;
+  if (bps >= 900_000) return 480;
+  return 360;
+}
+
+/**
+ * 壓縮影片成 MP4（H.264）。
+ * - 依壓縮程度的解析度與位元率
+ * - 有設定上限：位元率不超過「上限 ÷ 影片長度」，結果還是超過就再降一點重來
+ * @param {{level:string, targetSize:number|null, metadata:string}} opts
+ */
+export async function compressVideo(file, opts, onProgress = () => {}, control = {}) {
+  const input = openInput(file);
+  try {
+    const track = await getVideoTrack(input);
+    const audioTrack = await input.getPrimaryAudioTrack().catch(() => null);
+    const preset = COMPRESS_PRESETS[opts.level] || COMPRESS_PRESETS.standard;
+    const warnings = [];
+
+    let bitrate = preset.bitrate;
+    let audioBitrate = preset.audio;
+    let short = preset.short;
+    if (opts.targetSize) {
+      // 有設定上限：依影片長度算出符合上限的位元率，比壓縮程度的設定低時才採用
+      const duration = await input.computeDuration();
+      if (!duration) throw new Error('讀不到影片長度，無法依目標大小壓縮');
+      const audioForTarget = audioTrack ? 96_000 : 0;
+      const capped = Math.floor((opts.targetSize * 8 * 0.96) / duration) - audioForTarget;
+      if (capped < 150_000) {
+        const need = ((150_000 + audioForTarget) * duration) / 8 / 0.96 / 1024 / 1024;
+        throw new Error(`目標大小太小：${Math.round(duration)} 秒的影片至少需要約 ${need.toFixed(1)} MB`);
+      }
+      if (capped < bitrate) {
+        bitrate = capped;
+        audioBitrate = audioForTarget || null;
+        short = Math.min(short, shortSideForBitrate(capped));
+      }
+    }
+    if (audioTrack && (audioBitrate || audioTrack.codec !== 'aac')) await ensureAacEncoder();
+
+    const size = fitResolution(track.displayWidth, track.displayHeight, short);
+    const resizing = size.width !== track.displayWidth || size.height !== track.displayHeight;
+
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const { blob, warnings: w } = await encode(file, input, 'mp4', {
+        video: {
+          codec: 'avc',
+          forceTranscode: true,
+          quality: new Quality({ bitrate, bitrateMode: 'variable' }),
+          ...(resizing ? { width: size.width, height: size.height, fit: 'contain' } : {}),
+        },
+        audio: audioBitrate
+          ? { codec: 'aac', quality: new Quality({ bitrate: audioBitrate }), forceTranscode: true }
+          : { codec: 'aac' },
+      }, opts.metadata, onProgress, control);
+      warnings.push(...w.filter((x) => !warnings.includes(x)));
+      if (!opts.targetSize || blob.size <= opts.targetSize || attempt === 2) {
+        if (opts.targetSize && blob.size > opts.targetSize) warnings.push('無法完全壓到目標大小以下');
+        return { blob, ext: '.mp4', width: size.width, height: size.height, warnings };
+      }
+      bitrate = Math.floor(((bitrate * opts.targetSize) / blob.size) * 0.92);
+    }
+  } finally {
+    input.dispose?.();
+  }
 }
 
 function trimRange(opts) {

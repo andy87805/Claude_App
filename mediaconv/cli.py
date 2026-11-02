@@ -12,6 +12,7 @@ from tqdm import tqdm
 from . import __version__
 from .converter import Options, Result, plan, run_job
 from .formats import IMAGE_OUTPUT_FORMATS, VIDEO_OUTPUT_FORMATS, normalize_image_format
+from .compress import LEVEL_NAMES, find_ghostscript, format_size, parse_size
 from .videos import VideoConversionError, find_ffmpeg, parse_resolution
 
 EPILOG = """\
@@ -28,6 +29,14 @@ EPILOG = """\
       從第 3 秒開始擷取 5 秒做成 GIF
   mediaconv photos -o share --strip-metadata
       移除 EXIF（含 GPS 位置），適合分享給別人
+
+壓縮（讓檔案變小，支援照片、影片、PDF）：
+  mediaconv ~/Documents -o small --compress
+      標準壓縮：照片最長邊 2048、影片 720p、PDF 圖片降到約 150 dpi
+  mediaconv scan.pdf -o small --compress --level strong
+      強力壓縮
+  mediaconv video.mov -o small --compress --target-size 25MB
+      壓到 25 MB 以內（例如 email 附件上限）
 """
 
 
@@ -62,6 +71,13 @@ def _image_format(value: str) -> str:
     return fmt
 
 
+def _size(value: str) -> int:
+    try:
+        return parse_size(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(str(exc))
+
+
 def _non_negative_float(value: str) -> float:
     n = float(value)
     if n < 0:
@@ -87,7 +103,8 @@ def build_parser() -> argparse.ArgumentParser:
     g.add_argument("--video-format", choices=list(VIDEO_OUTPUT_FORMATS), default="mp4",
                    type=str.lower, metavar="格式",
                    help=f"影片輸出格式：{', '.join(VIDEO_OUTPUT_FORMATS)}（預設 mp4，H.264）")
-    g.add_argument("--only", choices=["images", "videos"], help="只處理照片或只處理影片")
+    g.add_argument("--only", choices=["images", "videos", "pdfs"],
+                   help="只處理照片、影片或 PDF（PDF 只在壓縮模式處理）")
     g.add_argument("--no-recursive", action="store_true", help="不要處理子資料夾")
 
     g = p.add_argument_group("照片選項")
@@ -111,6 +128,15 @@ def build_parser() -> argparse.ArgumentParser:
     g.add_argument("--duration", type=_non_negative_float, metavar="秒", help="只轉幾秒")
     g.add_argument("--gif-fps", type=_positive_int, default=12, metavar="張數", help="GIF 每秒幾格（預設 12）")
     g.add_argument("--gif-width", type=_positive_int, default=480, metavar="像素", help="GIF 寬度（預設 480）")
+
+    g = p.add_argument_group("壓縮（讓檔案變小）")
+    g.add_argument("--compress", action="store_true",
+                   help="壓縮模式：照片存成 JPG、影片存成 MP4（H.264），也會處理 PDF。"
+                        "壓縮後沒有變小的檔案會保留原檔")
+    g.add_argument("--level", choices=["light", "standard", "strong"], default="standard",
+                   help="壓縮程度：light 輕度、standard 標準（預設）、strong 強力")
+    g.add_argument("--target-size", type=_size, metavar="大小",
+                   help="每個檔案的目標大小上限，例如 25MB、800KB（會自動調整畫質）")
 
     g = p.add_argument_group("其他")
     g.add_argument("--on-exists", choices=["skip", "rename", "overwrite"], default="skip",
@@ -142,17 +168,32 @@ def _write_error_log(output_dir: Path, result: Result) -> Path:
     return log
 
 
-def _print_summary(result: Result, interrupted: bool) -> None:
+def _print_summary(result: Result, interrupted: bool, compress: bool = False) -> None:
     print()
-    print("===== 轉換結果 =====" + ("（已中斷）" if interrupted else ""))
+    title = "壓縮結果" if compress else "轉換結果"
+    print(f"===== {title} =====" + ("（已中斷）" if interrupted else ""))
     print(f"  成功：{len(result.converted)}")
     if result.copied:
         print(f"  已是目標格式，直接複製：{len(result.copied)}")
+    if result.kept:
+        print(f"  原檔已經很小，保留原檔：{len(result.kept)}")
     if result.skipped:
         print(f"  略過：{len(result.skipped)}")
     print(f"  失敗：{len(result.failed)}")
     if result.ignored:
-        print(f"  （非照片/影片的檔案 {result.ignored} 個未處理）")
+        kinds = "照片/影片/PDF" if compress else "照片/影片"
+        print(f"  （非{kinds}的檔案 {result.ignored} 個未處理）")
+    done = result.converted + result.kept
+    if compress and done:
+        before = sum(j.src.stat().st_size for j in done)
+        after = sum(j.dst.stat().st_size for j in done if j.dst.exists())
+        saved = round((1 - after / before) * 100) if before else 0
+        print(f"  總大小：{format_size(before)} → {format_size(after)}（小了 {saved}%）")
+    noted = [j for j in done if j.notes and j.action != "kept"]
+    if noted:
+        print("\n提示：")
+        for j in noted:
+            print(f"  ! {j.src.name}：{'；'.join(j.notes)}")
     if result.failed:
         print("\n失敗的檔案：")
         for job, err in result.failed:
@@ -185,6 +226,9 @@ def main(argv: list[str] | None = None) -> int:
         duration=args.duration,
         on_exists=args.on_exists,
         reencode=args.reencode,
+        compress=args.compress,
+        level=args.level,
+        target_size=args.target_size,
     )
 
     try:
@@ -195,8 +239,8 @@ def main(argv: list[str] | None = None) -> int:
 
     result = Result(ignored=ignored)
     if not jobs:
-        print("沒有找到可以轉換的照片或影片。")
-        _print_summary(result, False)
+        print("沒有找到可以處理的檔案。" if args.compress else "沒有找到可以轉換的照片或影片。")
+        _print_summary(result, False, args.compress)
         return 0
 
     if any(j.kind == "video" and j.action == "convert" for j in jobs):
@@ -206,8 +250,15 @@ def main(argv: list[str] | None = None) -> int:
             print(f"錯誤：{exc}", file=sys.stderr)
             return 2
 
+    if args.compress:
+        target = f"，每個檔案上限 {format_size(args.target_size)}" if args.target_size else ""
+        print(f"壓縮程度：{LEVEL_NAMES[args.level]}{target}")
+        if any(j.kind == "pdf" for j in jobs) and not find_ghostscript():
+            print("提示：沒有安裝 Ghostscript，PDF 改用內建方式壓縮（只壓縮 PDF 裡的圖片）。"
+                  "安裝 Ghostscript 效果更好，見 README。")
+
     if args.dry_run:
-        labels = {"convert": "轉換", "copy": "複製", "skip": "略過"}
+        labels = {"convert": "壓縮" if args.compress else "轉換", "copy": "複製", "skip": "略過"}
         for j in jobs:
             note = f"（{j.reason}）" if j.reason else ""
             print(f"[{labels[j.action]}] {j.src} -> {j.dst}{note}")
@@ -245,7 +296,8 @@ def main(argv: list[str] | None = None) -> int:
             except Exception as exc:
                 result.failed.append((job, str(exc) or exc.__class__.__name__))
             else:
-                (result.copied if job.action == "copy" else result.converted).append(job)
+                bucket = {"copy": result.copied, "kept": result.kept}.get(job.action, result.converted)
+                bucket.append(job)
             finally:
                 if sub is not None:
                     sub.close()
@@ -255,7 +307,7 @@ def main(argv: list[str] | None = None) -> int:
     finally:
         bar.close()
 
-    _print_summary(result, interrupted)
+    _print_summary(result, interrupted, args.compress)
     if result.failed:
         log = _write_error_log(opts.output_dir, result)
         print(f"\n錯誤紀錄已寫入：{log}")

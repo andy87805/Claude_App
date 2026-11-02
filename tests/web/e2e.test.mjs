@@ -259,3 +259,96 @@ test('加到主畫面後可以離線開啟並轉換照片', async () => {
   assert.equal(await page.evaluate(() => window.__app.items[0].status), 'done');
   await context.close();
 });
+
+// ---------------- 壓縮模式 ----------------
+
+const fileSize = (name) => fs.statSync(path.join(FIX, name)).size;
+const outSize = (r) => {
+  const m = r.msg.match(/([\d.]+) (B|KB|MB)/);
+  return m ? Number(m[1]) * { B: 1, KB: 1024, MB: 1024 * 1024 }[m[2]] : null;
+};
+
+test('壓縮照片：標準程度縮到最長邊 2048、保留 EXIF；已經很小的照片保留原檔', async () => {
+  const { results: r, summary } = await convert(['noisy.jpg', 'photo.webp'], { mode: 'compress', level: 'standard' });
+  const n = r['noisy.jpg'];
+  assert.equal(n.status, 'done', n.msg);
+  assert.equal(n.info.format, 'JPEG');
+  assert.deepEqual(n.info.size, [2048, 1365]);
+  assert.equal(n.info.taken, '2024:05:01 10:20:30');
+  assert.ok(outSize(n) < fileSize('noisy.jpg') / 3, n.msg);
+
+  // 很小的 WebP 轉成 JPG 反而變大 -> 保留原本的 WebP
+  const tiny = r['photo.webp'];
+  assert.match(tiny.msg, /保留原檔/);
+  assert.equal(tiny.name, 'photo.webp');
+  assert.equal(tiny.info.format, 'WEBP');
+  assert.match(summary, /總大小/);
+});
+
+test('壓縮照片：上限很寬鬆時仍照壓縮程度處理', async () => {
+  const x = (await convert(['noisy.jpg'], { mode: 'compress', level: 'standard', targetSize: '26214400' })).results['noisy.jpg'];
+  assert.deepEqual(x.info.size, [2048, 1365]);
+});
+
+test('壓縮照片：指定目標大小', async () => {
+  const x = (await convert(['noisy.jpg'], { mode: 'compress', targetSize: '512000' })).results['noisy.jpg'];
+  assert.equal(x.status, 'done', x.msg);
+  assert.ok(outSize(x) <= 500 * 1024, x.msg);
+  assert.equal(x.info.taken, '2024:05:01 10:20:30');
+});
+
+test('壓縮影片：標準 720p，目標大小也能符合', async () => {
+  const std = (await convert(['hd.mov'], { mode: 'compress', level: 'standard' })).results['hd.mov'];
+  assert.equal(std.status, 'done', std.msg);
+  assert.equal(std.name, 'hd.mp4');
+  assert.equal(std.info.vcodec, 'h264');
+  assert.equal(std.info.acodec, 'aac');
+  assert.deepEqual(std.info.size, [1280, 720]);
+  assert.ok(outSize(std) < fileSize('hd.mov'), std.msg);
+
+  const target = 300 * 1024;
+  const t = (await convert(['hd.mov'], { mode: 'compress', targetSize: String(target) })).results['hd.mov'];
+  assert.equal(t.status, 'done', t.msg);
+  assert.ok(outSize(t) <= target, t.msg);
+  assert.equal(t.info.vcodec, 'h264');
+  assert.equal(t.info.acodec, 'aac');
+});
+
+test('壓縮 PDF：重新壓縮圖片（JPEG 與無損圖片），文字 PDF 保留原檔，加密 PDF 給出清楚錯誤', async () => {
+  const { results: r } = await convert(['scan.pdf', 'flate.pdf', 'text.pdf', 'locked.pdf'], { mode: 'compress' });
+
+  const scan = r['scan.pdf'];
+  assert.equal(scan.status, 'done', scan.msg);
+  assert.equal(scan.info.pages, 1);
+  assert.deepEqual(scan.info.filters, ['/DCTDecode']);
+  assert.ok(outSize(scan) < fileSize('scan.pdf') * 0.6, scan.msg);
+
+  const flate = r['flate.pdf'];
+  assert.equal(flate.status, 'done', flate.msg);
+  assert.deepEqual(flate.info.filters, ['/DCTDecode'], '無損圖片應轉成 JPG');
+  assert.ok(outSize(flate) < fileSize('flate.pdf') * 0.5, flate.msg);
+
+  const text = r['text.pdf'];
+  assert.equal(text.status, 'done', text.msg);
+  assert.match(text.msg, /沒有可以壓縮的圖片|保留原檔/);
+  assert.equal(text.info.pages, 2);
+  assert.equal(text.info.fonts, 2, '文字 PDF 不能被破壞');
+
+  assert.equal(r['locked.pdf'].status, 'failed');
+  assert.match(r['locked.pdf'].msg, /密碼/);
+});
+
+test('壓縮 PDF：強力模式把每頁轉成圖片', async () => {
+  const x = (await convert(['scan.pdf'], { mode: 'compress', level: 'strong' })).results['scan.pdf'];
+  assert.equal(x.status, 'done', x.msg);
+  assert.equal(x.info.pages, 1);
+  assert.equal(x.info.fonts, 0);
+  assert.ok(outSize(x) < fileSize('scan.pdf') * 0.3, x.msg);
+  assert.match(x.msg, /文字無法選取/);
+});
+
+test('轉換格式模式選到 PDF 會提示改用壓縮模式', async () => {
+  const x = (await convert(['scan.pdf'], { mode: 'convert' })).results['scan.pdf'];
+  assert.equal(x.status, 'failed');
+  assert.match(x.msg, /壓縮檔案/);
+});

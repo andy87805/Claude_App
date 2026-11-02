@@ -173,6 +173,16 @@ def convert_video(
             total = min(total, options["duration"])
 
     cmd = build_command(src, dst, fmt, **options)
+    run_ffmpeg(cmd, dst, total, on_progress)
+
+
+def run_ffmpeg(
+    cmd: list[str],
+    dst: Path,
+    total: float | None,
+    on_progress: Callable[[float, float | None], None] | None = None,
+) -> None:
+    """執行 ffmpeg 並回報進度；失敗時丟出 VideoConversionError。"""
     proc = subprocess.Popen(
         cmd,
         stdout=subprocess.PIPE,

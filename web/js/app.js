@@ -1,6 +1,9 @@
-import { convertImage } from './image.js';
+import { convertImage, compressImage } from './image.js';
 
 const DEFAULTS = {
+  mode: 'convert',
+  level: 'standard',
+  targetSize: '',
   imageFormat: 'jpg',
   quality: 85,
   maxSize: '',
@@ -16,7 +19,17 @@ const DEFAULTS = {
 const STORAGE_KEY = 'mediaconv-settings';
 
 const IMAGE_EXT = /\.(jpe?g|jfif|png|webp|heic|heif|hif|avif|gif|bmp|tiff?)$/i;
+const PDF_EXT = /\.pdf$/i;
 const VIDEO_EXT = /\.(mp4|m4v|mov|qt|mkv|webm|3gp|3g2|ts|mts|m2ts|ogv|avi|wmv|flv)$/i;
+
+const LEVEL_NOTES = {
+  light: '照片最長邊 3000、影片 1080p、PDF 裡的圖片約 2400 像素。畫質幾乎看不出差別。',
+  standard: '照片最長邊 2048、影片 720p、PDF 裡的圖片約 1600 像素。適合傳 LINE、寄 email。',
+  strong: '照片最長邊 1280、影片 480p；PDF 每一頁轉成圖片（文字無法選取，適合掃描檔）。',
+};
+
+const ACCEPT_CONVERT = 'image/*,video/*,.heic,.heif,image/heic,image/heif,.mov,.mkv,.webm';
+const ACCEPT_COMPRESS = `${ACCEPT_CONVERT},application/pdf,.pdf`;
 
 const METADATA_NOTES = {
   keep: '保留拍攝時間、相機型號、GPS 位置等資訊，存回相簿時會依拍攝時間排列。',
@@ -86,12 +99,20 @@ function render() {
   for (const el of document.querySelectorAll('.gif-only')) el.hidden = !isGif;
   for (const el of document.querySelectorAll('.video-only')) el.hidden = isGif;
   $('#metadataNote').textContent = METADATA_NOTES[settings.metadata];
+  const compressing = settings.mode === 'compress';
+  for (const el of document.querySelectorAll('.convert-only')) el.hidden = compressing;
+  for (const el of document.querySelectorAll('.compress-only')) el.hidden = !compressing;
+  $('#levelNote').textContent = LEVEL_NOTES[settings.level];
+  $('#pickerText').textContent = compressing ? '選擇照片、影片或 PDF' : '選擇照片或影片';
+  $('#fileInput').accept = compressing ? ACCEPT_COMPRESS : ACCEPT_CONVERT;
+  document.title = compressing ? '壓縮檔案 · 轉檔工具' : '轉檔工具';
   updateButtons();
 }
 
 // ---------- 檔案清單 ----------
 
 function kindOf(file) {
+  if (file.type === 'application/pdf' || PDF_EXT.test(file.name)) return 'pdf';
   if (file.type.startsWith('image/') || IMAGE_EXT.test(file.name)) return 'image';
   if (file.type.startsWith('video/') || VIDEO_EXT.test(file.name)) return 'video';
   return null;
@@ -109,15 +130,16 @@ function addFiles(fileList) {
     const li = $('#itemTemplate').content.firstElementChild.cloneNode(true);
     const item = { file, kind, status: 'queued', el: li, result: null };
     li.querySelector('.name').textContent = file.name;
-    li.querySelector('.meta').textContent = `${kind === 'video' ? '影片' : kind === 'image' ? '照片' : '不支援'} · ${formatBytes(file.size)}`;
+    const label = { video: '影片', image: '照片', pdf: 'PDF' }[kind] || '不支援';
+    li.querySelector('.meta').textContent = `${label} · ${formatBytes(file.size)}`;
     const thumb = li.querySelector('.thumb');
     if (kind === 'image') {
       item.thumbUrl = URL.createObjectURL(file);
       thumb.style.backgroundImage = `url("${item.thumbUrl}")`;
     } else {
-      thumb.textContent = kind === 'video' ? '影片' : '?';
+      thumb.textContent = kind === 'video' ? '影片' : kind === 'pdf' ? 'PDF' : '?';
     }
-    if (!kind) setStatus(item, 'failed', '不是照片或影片', 'err');
+    if (!kind) setStatus(item, 'failed', '不是照片、影片或 PDF', 'err');
     items.push(item);
     $('#fileList').append(li);
   }
@@ -180,11 +202,43 @@ async function loadVideoModule() {
   return videoModule;
 }
 
+let pdfModule;
+async function loadPdfModule() {
+  pdfModule ??= await import('./pdf.js');
+  return pdfModule;
+}
+
+async function compressItem(item, onProgress) {
+  const opts = {
+    level: settings.level,
+    targetSize: Number(settings.targetSize) || null,
+    metadata: settings.metadata,
+  };
+  if (item.kind === 'image') return compressImage(item.file, opts);
+  if (item.kind === 'pdf') return (await loadPdfModule()).compressPdf(item.file, opts, onProgress);
+  const video = await loadVideoModule();
+  if (!video.supportsVideo()) {
+    throw new Error('這個瀏覽器不支援影片處理，請更新 iOS 或改用新版 Safari / Chrome');
+  }
+  return video.compressVideo(item.file, opts, onProgress);
+}
+
 async function convertItem(item) {
-  setStatus(item, 'working', '轉換中…');
+  const compressing = settings.mode === 'compress';
+  setStatus(item, 'working', compressing ? '壓縮中…' : '轉換中…');
   setProgress(item, 0.02);
+  const onProgress = (p) => setProgress(item, Math.max(0.02, p));
   let result;
-  if (item.kind === 'image') {
+  if (compressing) {
+    result = await compressItem(item, onProgress);
+    if (result.blob.size >= item.file.size) {
+      // 壓縮後沒有比較小：保留原檔
+      const ext = item.file.name.match(/\.[^.]+$/)?.[0] || '';
+      result = { blob: item.file, ext, warnings: [], kept: true };
+    }
+  } else if (item.kind === 'pdf') {
+    throw new Error('PDF 請切換到「壓縮檔案」模式');
+  } else if (item.kind === 'image') {
     result = await convertImage(item.file, {
       format: settings.imageFormat,
       quality: settings.quality,
@@ -213,7 +267,7 @@ async function convertItem(item) {
             }
           : {}),
       },
-      (p) => setProgress(item, Math.max(0.02, p)),
+      onProgress,
     );
   }
   const name = outputName(item.file, result.ext);
@@ -223,7 +277,9 @@ async function convertItem(item) {
 
   const diff = item.file.size ? Math.round((1 - file.size / item.file.size) * 100) : 0;
   const change = diff > 0 ? `，小了 ${diff}%` : diff < 0 ? `，大了 ${-diff}%` : '';
-  const text = `完成：${name} · ${formatBytes(file.size)}${change}`;
+  const text = result.kept
+    ? `原檔已經很小，保留原檔：${name}`
+    : `完成：${name} · ${formatBytes(file.size)}${change}`;
   const warn = result.warnings.length ? `\n${result.warnings.join('；')}` : '';
   setStatus(item, 'done', text + warn, result.warnings.length ? 'warn' : 'ok');
   addItemActions(item);
@@ -303,11 +359,17 @@ async function convertAll() {
   busy = false;
   updateButtons();
 
-  const ok = items.filter((i) => i.status === 'done').length;
+  const doneItems = items.filter((i) => i.status === 'done');
   const failed = items.filter((i) => i.status === 'failed').length;
   const summary = $('#summary');
   summary.hidden = false;
-  summary.textContent = `成功 ${ok} 個${failed ? `，失敗 ${failed} 個` : ''}`;
+  let text = `成功 ${doneItems.length} 個${failed ? `，失敗 ${failed} 個` : ''}`;
+  if (settings.mode === 'compress' && doneItems.length) {
+    const before = doneItems.reduce((n, i) => n + i.file.size, 0);
+    const after = doneItems.reduce((n, i) => n + i.result.file.size, 0);
+    text += `\n總大小 ${formatBytes(before)} → ${formatBytes(after)}（小了 ${Math.round((1 - after / before) * 100)}%）`;
+  }
+  summary.textContent = text;
 }
 
 // ---------- 初始化 ----------

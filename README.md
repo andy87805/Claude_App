@@ -1,9 +1,10 @@
-# mediaconv — 照片與影片批次格式轉換
+# mediaconv — 照片、影片格式轉換與壓縮
 
-一個在 Mac / Windows 上都能用的命令列工具，可以整個資料夾（含子資料夾）一次轉換照片和影片格式。
+一個在 Mac / Windows 上都能用的命令列工具，可以整個資料夾（含子資料夾）一次轉換照片和影片格式，也能**壓縮照片、影片和 PDF**。另外還有在 iPhone 上就能用的網頁版。
 
 - 📷 照片：HEIC、PNG、WebP、AVIF、TIFF、BMP、GIF ⇄ JPG（各格式之間都能互轉）
 - 🎬 影片：MOV、AVI、MKV、WMV、FLV、WebM、3GP、MTS… → MP4（H.264），也能轉 MOV / MKV / WebM / GIF
+- 🗜 壓縮模式：讓照片、影片、PDF 變小，可選壓縮程度或指定每個檔案的上限（例如 25 MB）
 - 🗂 批次處理整個資料夾，輸出時保留原本的子資料夾結構
 - 🛡 **絕不修改或覆蓋原始檔案**；遇到壞檔會略過並記錄，不會整批中斷
 - 📍 照片預設保留 EXIF（拍攝時間、相機、GPS），並依照方向資訊自動轉正
@@ -21,6 +22,7 @@
 - 用 Safari 開啟後點「分享」→「加入主畫面」，就像 App 一樣，而且**離線也能用**
 - 照片：HEIC / PNG / WebP / JPG… → **JPG、PNG、WebP**；保留拍攝時間、GPS，並自動轉正
 - 影片：MOV / MP4 / MKV / WebM → **MP4、MOV（H.264）、WebM、GIF**；可選解析度與畫質
+- **壓縮檔案**模式：照片、影片、PDF 都能壓縮（見下方[壓縮功能](#壓縮功能)）
 - 「拍攝資訊」可選全部保留、**只移除 GPS 位置**（分享給別人時建議用），或全部移除
 - 轉好後按「儲存」會開啟 iPhone 的分享選單，選「儲存影像／儲存影片」就會存回相簿
 
@@ -32,16 +34,39 @@
 | 影片輸入格式 | 幾乎所有格式（含 AVI、WMV、FLV） | MP4、MOV、MKV、WebM（不支援 AVI、WMV、FLV） |
 | 影片長度 | 不限 | 建議 1–2 分鐘以內（受手機記憶體限制） |
 | 整個資料夾批次處理 | ✅ | 一次選多個檔案 |
+| PDF 壓縮 | Ghostscript（效果最好），沒裝時自動改用內建方式 | 重新壓縮 PDF 裡的圖片；強力模式每頁轉圖片 |
 
 ### 小細節
 - 如果影片已經是 H.264、不用縮小、畫質選「高」，會直接搬移影像資料，**幾乎瞬間完成、畫質零損失**。選「中」「低」才會重新壓縮讓檔案變小。
 - iPhone 瀏覽器的圖片上限約 1600 萬像素；4800 萬或 2400 萬像素的照片會自動縮小到上限內，並在畫面上提示。
 - 轉換時會讓螢幕保持不關閉；請不要切換到其他 App，否則 iOS 可能暫停轉換。
 
-### 部署方式
+### 部署方式（網頁版）
 
 推送到 `master` 時，GitHub Actions（`.github/workflows/pages.yml`）會自動把 `web/` 資料夾發佈到 GitHub Pages。
 第一次需要在 repo 的 **Settings → Pages → Build and deployment → Source** 選 **GitHub Actions**。
+
+---
+
+## 壓縮功能
+
+網頁版切換到「**壓縮檔案**」，電腦版加上 `--compress`。三種程度：
+
+| 程度 | 照片（存成 JPG） | 影片（存成 MP4 / H.264） | PDF |
+|---|---|---|---|
+| 輕度 | 最長邊 3000、品質 80 | 1080p，約 5 Mbps | 圖片降到約 300 dpi／2400 像素 |
+| **標準**（預設） | 最長邊 2048、品質 75 | 720p，約 2.5 Mbps | 圖片降到約 150 dpi／1600 像素 |
+| 強力 | 最長邊 1280、品質 65 | 480p，約 1 Mbps | 電腦版：圖片降到約 72 dpi；網頁版：每一頁轉成圖片（文字無法選取） |
+
+- **每個檔案上限**（網頁版的下拉選單、電腦版的 `--target-size 25MB`）：先照選的程度壓縮，還是超過上限時才自動壓得更小。照片會降低品質、必要時再縮小尺寸；影片會依長度算出位元率；PDF 會改用更強的程度。
+- **壓縮後沒有變小的檔案會保留原檔**（副檔名也不變），所以不用擔心越壓越大。
+- 拍攝時間、GPS 的保留或移除，和轉換模式的設定相同。
+- PDF 的效果差很多：**掃描檔、照片多的 PDF 通常能小 50–90%**；純文字 PDF 本來就小，幾乎不會變小。
+- 有密碼保護的 PDF 無法壓縮。
+
+### 為什麼 HEIC 轉 PNG 會變大好幾倍？
+
+HEIC 是效率很高的**有損**壓縮；PNG 是**無損**格式，每個像素都原封不動記錄下來，所以照片轉 PNG 通常會大 5–10 倍，而且 HEIC 已經損失的細節也救不回來。照片請用 JPG（相容性最好）或 WebP；PNG 適合截圖、圖表和需要透明背景的圖。
 
 ---
 
@@ -71,6 +96,13 @@ pip install .
 
 - Mac：`brew install ffmpeg`
 - Windows：`winget install ffmpeg`
+
+### 4. Ghostscript（選用，壓縮 PDF 效果更好）
+
+沒有安裝也能壓縮 PDF（會改用內建的 pikepdf 重新壓縮 PDF 裡的圖片），但裝了 Ghostscript 效果更好：
+
+- Mac：`brew install ghostscript`
+- Windows：`winget install ArtifexSoftware.GhostScript`，或從 <https://ghostscript.com/releases/gsdnld.html> 下載
 
 ---
 
@@ -111,6 +143,15 @@ mediaconv photos -o share --strip-metadata
 
 # 先看看會做什麼，不實際轉換
 mediaconv photos -o out --dry-run
+
+# 壓縮整個資料夾（照片、影片、PDF 都會處理）
+mediaconv ~/Documents/要寄的檔案 -o ~/Desktop/small --compress
+
+# 強力壓縮掃描的 PDF
+mediaconv scan.pdf -o small --compress --level strong
+
+# 每個檔案壓到 25 MB 以內（email 附件上限）
+mediaconv video.mov report.pdf -o small --compress --target-size 25MB
 ```
 
 ---
@@ -122,7 +163,7 @@ mediaconv photos -o out --dry-run
 | `-o`, `--output` | 輸出資料夾，會保留子資料夾結構 | `./converted` |
 | `--image-format` | 照片輸出：`jpg` `png` `webp` `heic` `avif` `tiff` `bmp` | `jpg` |
 | `--video-format` | 影片輸出：`mp4` `mov` `mkv` `webm` `gif` | `mp4` |
-| `--only` | `images` 只轉照片／`videos` 只轉影片 | 兩者都轉 |
+| `--only` | `images` 只處理照片／`videos` 只處理影片／`pdfs` 只處理 PDF（壓縮模式） | 全部 |
 | `--no-recursive` | 不處理子資料夾 | 會處理 |
 | **照片** | | |
 | `-q`, `--quality` | 品質 1–100（JPG / WebP / HEIC / AVIF） | `85` |
@@ -134,6 +175,10 @@ mediaconv photos -o out --dry-run
 | `--preset` | 編碼速度 `ultrafast` … `veryslow`，越慢檔案越小 | `medium` |
 | `--start` / `--duration` | 從第幾秒開始／只轉幾秒 | 整支 |
 | `--gif-fps` / `--gif-width` | GIF 每秒張數／寬度 | `12` / `480` |
+| **壓縮** | | |
+| `--compress` | 壓縮模式：照片存成 JPG、影片存成 MP4，也會處理 PDF | 關閉 |
+| `--level` | 壓縮程度：`light` 輕度、`standard` 標準、`strong` 強力 | `standard` |
+| `--target-size` | 每個檔案的上限，例如 `25MB`、`800KB` | 不限 |
 | **其他** | | |
 | `--on-exists` | 輸出資料夾已有同名檔：`skip` 略過、`rename` 另存 `_1`、`overwrite` 覆蓋**輸出檔** | `skip` |
 | `--reencode` | 來源已是目標格式時也重新壓縮 | 直接複製 |
@@ -183,7 +228,7 @@ pip install -e ".[dev]"
 pytest
 ```
 
-測試會即時產生測試用的照片與影片，不需要額外素材。測試涵蓋：各格式互轉、EXIF / GPS 保留、方向轉正、縮圖、品質、透明背景、影片轉 H.264、解析度（橫式／直式／不放大）、GIF、批次與子資料夾、不覆蓋原檔、壞檔處理、撞名處理等。
+測試會即時產生測試用的照片與影片，不需要額外素材。測試涵蓋：各格式互轉、EXIF / GPS 保留、方向轉正、縮圖、品質、透明背景、影片轉 H.264、解析度（橫式／直式／不放大）、GIF、批次與子資料夾、不覆蓋原檔、壞檔處理、撞名處理，以及照片／影片／PDF 壓縮（各程度、目標大小、變大時保留原檔、加密 PDF）等。
 
 ### 網頁版測試
 
@@ -205,14 +250,16 @@ mediaconv/            電腦版（Python）
 ├── converter.py      掃描資料夾、規劃輸出路徑、執行轉換
 ├── images.py         照片轉換（Pillow + pillow-heif）
 ├── videos.py         影片轉換（ffmpeg）
+├── compress.py       壓縮模式（照片、影片、PDF）
 └── formats.py        支援的格式定義
 web/                  網頁版（純前端，不需要建置）
 ├── index.html
 ├── css/style.css
 ├── js/app.js         介面、檔案清單、儲存／分享
-├── js/image.js       照片轉換（瀏覽器解碼 + canvas）
+├── js/image.js       照片轉換與壓縮（瀏覽器解碼 + canvas）
 ├── js/exif.js        讀取／修改／寫入 EXIF（JPEG、PNG、WebP、HEIC）
-├── js/video.js       影片轉換（Mediabunny / WebCodecs）與 GIF
+├── js/video.js       影片轉換與壓縮（Mediabunny / WebCodecs）、GIF
+├── js/pdf.js         PDF 壓縮（pdf-lib / PDF.js）
 ├── sw.js             離線快取
 └── vendor/           第三方函式庫（授權條款見 vendor/licenses/）
 tests/                電腦版 pytest 測試
@@ -227,4 +274,6 @@ tests/web/            網頁版端對端測試
 | @mediabunny/aac-encoder 1.61.4 | 瀏覽器不能編碼 AAC 時的備援 | MPL-2.0 |
 | [gifenc](https://github.com/mattdesl/gifenc) 1.0.3 | GIF 編碼 | MIT |
 | [heic-to](https://github.com/hoppergee/heic-to) 1.6.6 | 非 Safari 瀏覽器讀取 HEIC 的備援 | LGPL-3.0 |
+| [pdf-lib](https://pdf-lib.js.org) 1.17.1 | 讀寫 PDF、替換圖片 | MIT |
+| [PDF.js](https://mozilla.github.io/pdf.js/) 6.4.299 | 強力壓縮時把 PDF 頁面轉成圖片 | Apache-2.0 |
 | [@jsquash/webp](https://github.com/jamsinclair/jSquash) 1.5.0 | Safari 不能輸出 WebP 時的備援 | Apache-2.0 |

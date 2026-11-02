@@ -12,13 +12,14 @@ const PRECACHE = [
   'js/image.js',
   'js/exif.js',
   'js/video.js',
+  'js/pdf.js',
   'manifest.webmanifest',
   'icons/icon-192.png',
   'icons/apple-touch-icon.png',
   'vendor/mediabunny.min.mjs',
   'vendor/gifenc.esm.js',
 ];
-// 其他檔案（HEIC/WebP/AAC 備援編碼器）用到時才下載並快取
+// 其他檔案（PDF 函式庫、HEIC/WebP/AAC 備援編碼器）用到時才下載並快取
 
 self.addEventListener('install', (event) => {
   event.waitUntil(
