@@ -373,7 +373,7 @@ test('選錯檔案可以個別按叉叉移除，剩下的照常轉換', async ()
   assert.doesNotMatch(await page.textContent('#summary'), /失敗/);
 
   // 全部移除後清單隱藏
-  for (let n = 0; n < 2; n++) await page.locator('.file .remove').first().click();
+  for (let n = 0; n < 2; n++) await page.locator('.file:not(.leaving) .remove').first().click();
   await page.waitForFunction(() => document.querySelectorAll('.file').length === 0);
   assert.equal(await page.isHidden('#listSection'), true);
   await page.close();
@@ -423,5 +423,77 @@ with zipfile.ZipFile(sys.argv[1]) as z:
 `, zipPath], { encoding: 'utf8' }));
   assert.deepEqual(listing, expected);
   assert.ok(listing.some((f) => f.name === '旅行照片.jpg'));
+  await page.close();
+});
+
+// ---------------- 預覽 ----------------
+
+async function prepared(files, settings = {}) {
+  const page = await browser.newPage();
+  const errors = [];
+  page.on('pageerror', (e) => errors.push(e));
+  await page.addInitScript((s) => localStorage.setItem('mediaconv-settings', JSON.stringify(s)), settings);
+  await page.goto(baseUrl);
+  await page.setInputFiles('#fileInput', files.map((f) => path.join(FIX, f)));
+  await page.click('#convertBtn');
+  await page.waitForFunction(() => window.__app.items.every((i) => i.status === 'done' || i.status === 'failed'));
+  return { page, errors };
+}
+
+test('預覽照片：點擊檔案開啟、可切換原檔比較、可左右切換、可關閉', async () => {
+  const { page, errors } = await prepared(['noisy.jpg', 'rotated.jpg'], { mode: 'compress' });
+
+  // 點下載按鈕不會開預覽
+  await page.locator('.file', { hasText: 'noisy.jpg' }).locator('a.small').click();
+  assert.equal(await page.evaluate(() => document.querySelector('#preview').open), false);
+
+  await page.locator('.file', { hasText: 'noisy.jpg' }).locator('.name').click();
+  await page.waitForFunction(() => document.querySelector('#preview').open);
+  await page.waitForFunction(() => document.querySelector('.pv-image')?.naturalWidth > 0);
+  assert.equal(await page.textContent('.pv-name'), 'noisy.jpg');
+  assert.match(await page.textContent('.pv-sub'), /2048 × 1365/);
+  assert.match(await page.textContent('.pv-sub'), /小了 \d+%/);
+  assert.equal(await page.textContent('.pv-count'), '1 / 2');
+
+  // 原檔比較
+  await page.click('.pv-toggle button[data-view="original"]');
+  await page.waitForFunction(() => document.querySelector('.pv-image')?.naturalWidth === 3000);
+  assert.match(await page.textContent('.pv-sub'), /3000 × 2000/);
+
+  // 下一個
+  await page.click('.pv-next');
+  await page.waitForFunction(() => document.querySelector('.pv-name').textContent === 'rotated.jpg');
+  await page.waitForFunction(() => document.querySelector('.pv-image')?.naturalWidth > 0);
+
+  // 點照片放大、再點縮回
+  await page.click('.pv-image');
+  assert.equal(await page.evaluate(() => document.querySelector('.pv-stage').classList.contains('zoomed')), true);
+  await page.click('.pv-image');
+  assert.equal(await page.evaluate(() => document.querySelector('.pv-stage').classList.contains('zoomed')), false);
+
+  // 鍵盤 Esc 關閉
+  await page.keyboard.press('Escape');
+  await page.waitForFunction(() => !document.querySelector('#preview').open);
+  assert.deepEqual(errors, []);
+  await page.close();
+});
+
+test('預覽影片與 PDF', async () => {
+  const { page, errors } = await prepared(['clip.mov', 'scan.pdf'], { mode: 'compress' });
+
+  await page.locator('.file', { hasText: 'clip.mov' }).click();
+  await page.waitForFunction(() => document.querySelector('#preview').open);
+  assert.equal(await page.locator('.pv-video').count(), 1);
+  assert.match(await page.getAttribute('.pv-video', 'src'), /^blob:/);
+
+  await page.click('.pv-next');
+  await page.waitForFunction(() => document.querySelectorAll('.pv-page').length === 1, null, { timeout: 30_000 });
+  assert.ok(await page.evaluate(() => document.querySelector('.pv-page').width > 100));
+  assert.match(await page.textContent('.pv-sub'), /1 頁/);
+
+  await page.click('.pv-close');
+  await page.waitForFunction(() => !document.querySelector('#preview').open);
+  assert.equal(await page.locator('.pv-stage > *').count(), 0, '關閉後要清掉預覽內容');
+  assert.deepEqual(errors, []);
   await page.close();
 });

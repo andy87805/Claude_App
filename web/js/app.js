@@ -1,4 +1,5 @@
 import { convertImage, compressImage } from './image.js';
+import { createPreview } from './preview.js';
 
 const DEFAULTS = {
   mode: 'convert',
@@ -200,6 +201,16 @@ function addFiles(fileList) {
     }
     if (!kind) setStatus(item, 'failed', '不是照片、影片或 PDF', 'err');
     li.querySelector('.remove').addEventListener('click', () => removeItem(item));
+    // 完成後點擊檔案（按鈕以外的地方）就預覽
+    li.addEventListener('click', (e) => {
+      if (item.status === 'done' && !e.target.closest('button, a')) preview.open(item);
+    });
+    li.addEventListener('keydown', (e) => {
+      if (item.status === 'done' && (e.key === 'Enter' || e.key === ' ') && e.target === li) {
+        e.preventDefault();
+        preview.open(item);
+      }
+    });
     items.push(item);
     $('#fileList').append(li);
   }
@@ -386,6 +397,8 @@ async function convertItem(item) {
     : `完成：${name} · ${formatBytes(file.size)}${change}`;
   const warn = result.warnings.length ? `\n${result.warnings.join('；')}` : '';
   setStatus(item, 'done', text + warn, result.warnings.length ? 'warn' : 'ok');
+  item.el.tabIndex = 0;
+  item.el.setAttribute('aria-label', `${name}，點擊預覽`);
   addItemActions(item);
 }
 
@@ -570,7 +583,17 @@ function celebrate(container) {
 
 // ---------- 初始化 ----------
 
+let preview;
+
 function init() {
+  preview = createPreview({
+    getItems: () => items,
+    formatBytes,
+    canShare,
+    shareFiles,
+    triggerDownload,
+    reduceMotion,
+  });
   bindSettings();
   render();
   // 第一次畫面出來之後才開啟過場動畫，避免一打開就看到元件滑來滑去

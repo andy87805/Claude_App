@@ -285,3 +285,57 @@ export async function compressPdf(file, opts, onProgress = () => {}) {
   smallest.warnings = [...smallest.warnings, '無法壓到目標大小以下，已盡量壓縮'];
   return done(smallest);
 }
+
+// ---------- 預覽 ----------
+
+/**
+ * 把 PDF 每一頁畫到 container 裡（給預覽用）。
+ * @param {Blob} file
+ * @param {HTMLElement} container
+ * @param {{cancelled:boolean}} token 預覽關掉時設成 true，就停止繪製
+ */
+export async function renderPdfPreview(file, container, token) {
+  const pdfjs = await import(`${PDFJS_DIR}pdf.min.mjs`);
+  pdfjs.GlobalWorkerOptions.workerSrc = `${PDFJS_DIR}pdf.worker.min.mjs`;
+  const task = pdfjs.getDocument({
+    data: new Uint8Array(await file.arrayBuffer()),
+    cMapUrl: `${PDFJS_DIR}cmaps/`,
+    cMapPacked: true,
+    standardFontDataUrl: `${PDFJS_DIR}standard_fonts/`,
+    wasmUrl: `${PDFJS_DIR}wasm/`,
+    iccUrl: `${PDFJS_DIR}iccs/`,
+    isEvalSupported: false,
+  });
+  try {
+    const doc = await task.promise;
+    const dpr = Math.min(window.devicePixelRatio || 1, 2);
+    for (let i = 1; i <= doc.numPages && !token.cancelled; i++) {
+      const page = await doc.getPage(i);
+      const base = page.getViewport({ scale: 1 });
+      const cssWidth = Math.min(container.clientWidth || 360, 900);
+      let scale = (cssWidth / base.width) * dpr;
+      if (base.width * base.height * scale * scale > MAX_PAGE_AREA) {
+        scale = Math.sqrt(MAX_PAGE_AREA / (base.width * base.height));
+      }
+      const viewport = page.getViewport({ scale });
+      const canvas = document.createElement('canvas');
+      canvas.className = 'pv-page';
+      canvas.width = Math.ceil(viewport.width);
+      canvas.height = Math.ceil(viewport.height);
+      canvas.setAttribute('aria-label', `第 ${i} 頁`);
+      const ctx = canvas.getContext('2d');
+      ctx.fillStyle = '#fff';
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+      await page.render({ canvas, canvasContext: ctx, viewport }).promise;
+      page.cleanup();
+      if (token.cancelled) break;
+      container.append(canvas);
+    }
+    return doc.numPages;
+  } catch (err) {
+    if (err?.name === 'PasswordException') throw new Error('這個 PDF 有密碼保護，無法預覽');
+    throw err;
+  } finally {
+    await task.destroy();
+  }
+}

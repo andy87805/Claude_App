@@ -217,6 +217,32 @@
     <button type="button" class="secondary" id="downloadAllBtn" hidden><svg aria-hidden="true"><use href="#i-download"/></svg><span>全部下載</span></button>
   </div>
 
+  <dialog id="preview" class="preview" aria-label="預覽">
+    <div class="pv-top">
+      <button type="button" class="pv-icon pv-close" aria-label="關閉預覽"><svg aria-hidden="true"><use href="#i-x"/></svg></button>
+      <div class="pv-title">
+        <div class="pv-name"></div>
+        <div class="pv-sub"></div>
+      </div>
+      <span class="pv-count"></span>
+    </div>
+    <div class="pv-body">
+      <div class="pv-stage"></div>
+      <button type="button" class="pv-icon pv-nav pv-prev" aria-label="上一個"><svg aria-hidden="true"><use href="#i-chevron"/></svg></button>
+      <button type="button" class="pv-icon pv-nav pv-next" aria-label="下一個"><svg aria-hidden="true"><use href="#i-chevron"/></svg></button>
+    </div>
+    <div class="pv-bottom">
+      <div class="seg pv-toggle" role="radiogroup" aria-label="比較" style="--n:2">
+        <button type="button" data-view="result">結果</button>
+        <button type="button" data-view="original">原檔</button>
+      </div>
+      <div class="pv-actions">
+        <button type="button" class="pv-btn pv-save">儲存</button>
+        <button type="button" class="pv-btn pv-download"><svg aria-hidden="true"><use href="#i-download"/></svg>下載</button>
+      </div>
+    </div>
+  </dialog>
+
   <template id="itemTemplate">
     <li class="file">
       <div class="thumb"><span class="badge" aria-hidden="true"></span></div>
