@@ -37,7 +37,20 @@ const METADATA_NOTES = {
   none: '移除所有拍攝資訊（時間、相機、位置）。',
 };
 
+const FORMAT_LABELS = { jpg: 'JPG', png: 'PNG', webp: 'WebP', mp4: 'MP4', mov: 'MOV', webm: 'WebM', gif: 'GIF' };
+const LEVEL_LABELS = { light: '輕度', standard: '標準', strong: '強力' };
+const METADATA_LABELS = { keep: '保留拍攝資訊', nogps: '移除位置', none: '移除拍攝資訊' };
+const KIND_ICONS = { image: 'i-photo', video: 'i-video', pdf: 'i-pdf' };
+
 const $ = (sel) => document.querySelector(sel);
+
+// 預覽不同風格用：網址加上 ?style=soft 或 ?style=pro
+const styleParam = new URLSearchParams(location.search).get('style');
+if (styleParam) document.documentElement.dataset.style = styleParam;
+
+function icon(id, cls = '') {
+  return `<svg class="${cls}" aria-hidden="true"><use href="#${id}"/></svg>`;
+}
 const settings = loadSettings();
 const items = [];
 let busy = false;
@@ -103,10 +116,30 @@ function render() {
   for (const el of document.querySelectorAll('.convert-only')) el.hidden = compressing;
   for (const el of document.querySelectorAll('.compress-only')) el.hidden = !compressing;
   $('#levelNote').textContent = LEVEL_NOTES[settings.level];
-  $('#pickerText').textContent = compressing ? '選擇照片、影片或 PDF' : '選擇照片或影片';
+  $('#pickerText').textContent = compressing ? '選擇要壓縮的照片、影片或 PDF' : '選擇要轉換的照片或影片';
+  renderChips();
   $('#fileInput').accept = compressing ? ACCEPT_COMPRESS : ACCEPT_CONVERT;
   document.title = compressing ? '壓縮檔案 · 轉檔工具' : '轉檔工具';
   updateButtons();
+}
+
+/** 設定區摺起來時，用小標籤顯示目前的設定。 */
+function renderChips() {
+  const chips = [];
+  if (settings.mode === 'compress') {
+    chips.push(LEVEL_LABELS[settings.level]);
+    if (settings.targetSize) chips.push(`上限 ${formatBytes(Number(settings.targetSize))}`);
+  } else {
+    chips.push(`照片 → ${FORMAT_LABELS[settings.imageFormat]}`);
+    if (settings.imageFormat !== 'png') chips.push(`品質 ${settings.quality}`);
+    if (settings.maxSize) chips.push(`最長邊 ${settings.maxSize}`);
+    chips.push(`影片 → ${FORMAT_LABELS[settings.videoFormat]}`);
+    if (settings.videoFormat !== 'gif' && settings.resolution) chips.push(settings.resolution);
+  }
+  chips.push(METADATA_LABELS[settings.metadata]);
+  $('#settingsChips').replaceChildren(
+    ...chips.map((text) => Object.assign(document.createElement('span'), { className: 'chip', textContent: text })),
+  );
 }
 
 // ---------- 檔案清單 ----------
@@ -133,11 +166,15 @@ function addFiles(fileList) {
     const label = { video: '影片', image: '照片', pdf: 'PDF' }[kind] || '不支援';
     li.querySelector('.meta').textContent = `${label} · ${formatBytes(file.size)}`;
     const thumb = li.querySelector('.thumb');
+    thumb.dataset.kind = kind || 'unknown';
+    thumb.insertAdjacentHTML('afterbegin', icon(KIND_ICONS[kind] || 'i-x', 'kind-icon'));
     if (kind === 'image') {
+      // 縮圖蓋在圖示上面；瀏覽器讀不了的格式（例如電腦上的 HEIC）就留下圖示
       item.thumbUrl = URL.createObjectURL(file);
-      thumb.style.backgroundImage = `url("${item.thumbUrl}")`;
-    } else {
-      thumb.textContent = kind === 'video' ? '影片' : kind === 'pdf' ? 'PDF' : '?';
+      const img = Object.assign(document.createElement('img'), { src: item.thumbUrl, alt: '', decoding: 'async' });
+      img.addEventListener('error', () => img.remove());
+      thumb.prepend(img);
+      thumb.append(thumb.querySelector('.badge'));
     }
     if (!kind) setStatus(item, 'failed', '不是照片、影片或 PDF', 'err');
     items.push(item);
@@ -147,6 +184,7 @@ function addFiles(fileList) {
   $('#count').textContent = items.length ? `(${items.length})` : '';
   $('#summary').hidden = true;
   updateButtons();
+  if (items.length) $('#listSection').scrollIntoView({ behavior: 'smooth', block: 'start' });
 }
 
 function clearFiles() {
@@ -166,6 +204,9 @@ function setStatus(item, status, message = '', tone = '') {
   item.status = status;
   item.el.classList.toggle('done', status === 'done');
   item.el.classList.toggle('failed', status === 'failed');
+  item.el.classList.toggle('working', status === 'working');
+  const badge = item.el.querySelector('.badge');
+  badge.innerHTML = status === 'done' ? icon('i-check') : status === 'failed' ? icon('i-x') : '';
   const msg = item.el.querySelector('.msg');
   msg.textContent = message;
   msg.className = `msg ${tone}`;
@@ -179,7 +220,9 @@ function updateButtons() {
   const pending = items.some((i) => i.status === 'queued');
   const done = items.filter((i) => i.status === 'done');
   $('#convertBtn').disabled = busy || !pending;
-  $('#convertBtn').textContent = busy ? '轉換中…' : '開始轉換';
+  const verb = settings.mode === 'compress' ? '壓縮' : '轉換';
+  const pendingCount = items.filter((i) => i.status === 'queued').length;
+  $('#convertBtn').textContent = busy ? `${verb}中…` : pendingCount > 1 ? `開始${verb}（${pendingCount} 個）` : `開始${verb}`;
   $('#convertBtn').hidden = !busy && !pending && done.length > 0;
   $('#saveAllBtn').hidden = busy || pending || done.length === 0;
   $('#clearBtn').disabled = busy;
@@ -363,13 +406,25 @@ async function convertAll() {
   const failed = items.filter((i) => i.status === 'failed').length;
   const summary = $('#summary');
   summary.hidden = false;
-  let text = `成功 ${doneItems.length} 個${failed ? `，失敗 ${failed} 個` : ''}`;
+  const status = `成功 ${doneItems.length} 個${failed ? `，失敗 ${failed} 個` : ''}`;
+  const before = doneItems.reduce((n, i) => n + i.file.size, 0);
+  const after = doneItems.reduce((n, i) => n + i.result.file.size, 0);
+  const saved = before - after;
+  const pct = before ? Math.round((saved / before) * 100) : 0;
+  summary.replaceChildren();
+  summary.classList.toggle('has-failed', failed > 0);
   if (settings.mode === 'compress' && doneItems.length) {
-    const before = doneItems.reduce((n, i) => n + i.file.size, 0);
-    const after = doneItems.reduce((n, i) => n + i.result.file.size, 0);
-    text += `\n總大小 ${formatBytes(before)} → ${formatBytes(after)}（小了 ${Math.round((1 - after / before) * 100)}%）`;
+    summary.innerHTML = `
+      <div class="sum-big">${saved > 0 ? `省下 <b>${formatBytes(saved)}</b>` : '沒有可以再壓縮的空間'}</div>
+      <div class="sum-meter"><span style="width:${Math.max(2, 100 - pct)}%"></span></div>
+      <div class="sum-line"></div>
+      <div class="sum-status"></div>`;
+    summary.querySelector('.sum-line').textContent = `總大小 ${formatBytes(before)} → ${formatBytes(after)}（小了 ${pct}%）`;
+  } else {
+    summary.innerHTML = `<div class="sum-big">${failed && !doneItems.length ? '沒有成功的檔案' : '完成！'}</div><div class="sum-status"></div>`;
   }
-  summary.textContent = text;
+  summary.querySelector('.sum-status').textContent = status;
+  summary.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
 }
 
 // ---------- 初始化 ----------
