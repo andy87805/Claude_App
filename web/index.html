@@ -1,0 +1,168 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>轉檔工具</title>
+  <meta name="description" content="在手機上直接轉換照片與影片格式，檔案不會上傳。">
+  <meta name="theme-color" content="#f5f5f7" media="(prefers-color-scheme: light)">
+  <meta name="theme-color" content="#000000" media="(prefers-color-scheme: dark)">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-title" content="轉檔">
+  <meta name="apple-mobile-web-app-status-bar-style" content="default">
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="icon" href="icons/icon-192.png">
+  <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+  <link rel="stylesheet" href="css/style.css">
+  <script type="importmap">
+    {
+      "imports": {
+        "mediabunny": "./vendor/mediabunny.min.mjs",
+        "wasm-feature-detect": "./vendor/wasm-feature-detect.js"
+      }
+    }
+  </script>
+  <script type="module" src="js/app.js"></script>
+</head>
+<body>
+  <main>
+    <header>
+      <h1>轉檔工具</h1>
+      <p class="sub">照片、影片直接在手機上轉換，檔案不會上傳到任何地方。</p>
+    </header>
+
+    <label class="picker" id="picker">
+      <input type="file" id="fileInput" multiple
+             accept="image/*,video/*,.heic,.heif,image/heic,image/heif,.mov,.mkv,.webm">
+      <span class="picker-icon" aria-hidden="true">＋</span>
+      <span class="picker-text">選擇照片或影片</span>
+      <span class="picker-hint">可一次選多個</span>
+    </label>
+
+    <section class="card" aria-labelledby="photoTitle">
+      <h2 id="photoTitle">照片</h2>
+      <div class="row">
+        <span class="label">轉成</span>
+        <div class="seg" role="radiogroup" data-setting="imageFormat">
+          <button type="button" data-value="jpg">JPG</button>
+          <button type="button" data-value="png">PNG</button>
+          <button type="button" data-value="webp">WebP</button>
+        </div>
+      </div>
+      <div class="row" id="qualityRow">
+        <label class="label" for="quality">品質 <output id="qualityOut">85</output></label>
+        <input type="range" id="quality" min="40" max="100" step="5" data-setting="quality">
+      </div>
+      <div class="row">
+        <label class="label" for="maxSize">尺寸</label>
+        <select id="maxSize" data-setting="maxSize">
+          <option value="">原尺寸</option>
+          <option value="4096">最長邊 4096</option>
+          <option value="2560">最長邊 2560</option>
+          <option value="1920">最長邊 1920（適合分享）</option>
+          <option value="1280">最長邊 1280</option>
+        </select>
+      </div>
+    </section>
+
+    <section class="card" aria-labelledby="videoTitle">
+      <h2 id="videoTitle">影片</h2>
+      <div class="row">
+        <span class="label">轉成</span>
+        <div class="seg" role="radiogroup" data-setting="videoFormat">
+          <button type="button" data-value="mp4">MP4</button>
+          <button type="button" data-value="mov">MOV</button>
+          <button type="button" data-value="webm">WebM</button>
+          <button type="button" data-value="gif">GIF</button>
+        </div>
+      </div>
+      <div class="row video-only">
+        <label class="label" for="resolution">解析度</label>
+        <select id="resolution" data-setting="resolution">
+          <option value="">原尺寸</option>
+          <option value="2160p">4K</option>
+          <option value="1080p">1080p</option>
+          <option value="720p">720p（適合分享）</option>
+          <option value="480p">480p</option>
+        </select>
+      </div>
+      <div class="row video-only">
+        <span class="label">畫質</span>
+        <div class="seg" role="radiogroup" data-setting="videoQuality">
+          <button type="button" data-value="high">高</button>
+          <button type="button" data-value="medium">中</button>
+          <button type="button" data-value="low">低</button>
+        </div>
+      </div>
+      <div class="row gif-only">
+        <label class="label" for="gifStart">從第幾秒</label>
+        <input type="number" id="gifStart" min="0" step="0.5" inputmode="decimal" data-setting="gifStart">
+      </div>
+      <div class="row gif-only">
+        <label class="label" for="gifDuration">長度（秒）</label>
+        <input type="number" id="gifDuration" min="0.5" max="60" step="0.5" inputmode="decimal" data-setting="gifDuration">
+      </div>
+      <div class="row gif-only">
+        <label class="label" for="gifWidth">寬度</label>
+        <select id="gifWidth" data-setting="gifWidth">
+          <option value="320">320</option>
+          <option value="480">480</option>
+          <option value="640">640</option>
+        </select>
+      </div>
+      <div class="row gif-only">
+        <label class="label" for="gifFps">每秒張數</label>
+        <select id="gifFps" data-setting="gifFps">
+          <option value="8">8</option>
+          <option value="12">12</option>
+          <option value="15">15</option>
+          <option value="24">24</option>
+        </select>
+      </div>
+    </section>
+
+    <section class="card" aria-labelledby="privacyTitle">
+      <h2 id="privacyTitle">拍攝資訊</h2>
+      <div class="seg seg-full" role="radiogroup" data-setting="metadata">
+        <button type="button" data-value="keep">全部保留</button>
+        <button type="button" data-value="nogps">移除位置</button>
+        <button type="button" data-value="none">全部移除</button>
+      </div>
+      <p class="note" id="metadataNote"></p>
+    </section>
+
+    <section id="listSection" hidden>
+      <div class="list-head">
+        <h2>檔案 <span id="count"></span></h2>
+        <button type="button" class="link" id="clearBtn">清除</button>
+      </div>
+      <ul id="fileList" class="files"></ul>
+    </section>
+
+    <p id="summary" class="summary" hidden></p>
+    <p class="footer">
+      處理全部在你的裝置上完成。影片建議 1–2 分鐘以內；太長或太大的影片可能因為手機記憶體不足而失敗。
+      <br>要加到主畫面：Safari 點「分享」→「加入主畫面」。
+    </p>
+  </main>
+
+  <div class="actions">
+    <button type="button" class="primary" id="convertBtn" disabled>開始轉換</button>
+    <button type="button" class="primary" id="saveAllBtn" hidden>全部儲存／分享</button>
+  </div>
+
+  <template id="itemTemplate">
+    <li class="file">
+      <div class="thumb"></div>
+      <div class="info">
+        <div class="name"></div>
+        <div class="meta"></div>
+        <div class="bar"><span></span></div>
+        <div class="msg"></div>
+      </div>
+      <div class="item-actions"></div>
+    </li>
+  </template>
+</body>
+</html>

@@ -9,9 +9,43 @@
 - 📍 照片預設保留 EXIF（拍攝時間、相機、GPS），並依照方向資訊自動轉正
 - 📊 顯示整體與單支影片的進度條，最後列出成功／失敗數量
 
+> 📱 **想在 iPhone 上用？** 請看下方的[網頁版](#網頁版iphone--任何瀏覽器)，不用安裝任何東西。
+
 ---
 
-## 安裝
+## 網頁版（iPhone / 任何瀏覽器）
+
+網址：**<https://andy87805.github.io/Claude_App/>**
+
+- 所有轉換都在手機上完成，**照片和影片不會上傳到任何地方**
+- 用 Safari 開啟後點「分享」→「加入主畫面」，就像 App 一樣，而且**離線也能用**
+- 照片：HEIC / PNG / WebP / JPG… → **JPG、PNG、WebP**；保留拍攝時間、GPS，並自動轉正
+- 影片：MOV / MP4 / MKV / WebM → **MP4、MOV（H.264）、WebM、GIF**；可選解析度與畫質
+- 「拍攝資訊」可選全部保留、**只移除 GPS 位置**（分享給別人時建議用），或全部移除
+- 轉好後按「儲存」會開啟 iPhone 的分享選單，選「儲存影像／儲存影片」就會存回相簿
+
+### 和電腦版的差異
+
+| | 電腦版（命令列） | 網頁版 |
+|---|---|---|
+| 照片輸出格式 | JPG、PNG、WebP、HEIC、AVIF、TIFF、BMP | JPG、PNG、WebP |
+| 影片輸入格式 | 幾乎所有格式（含 AVI、WMV、FLV） | MP4、MOV、MKV、WebM（不支援 AVI、WMV、FLV） |
+| 影片長度 | 不限 | 建議 1–2 分鐘以內（受手機記憶體限制） |
+| 整個資料夾批次處理 | ✅ | 一次選多個檔案 |
+
+### 小細節
+- 如果影片已經是 H.264、不用縮小、畫質選「高」，會直接搬移影像資料，**幾乎瞬間完成、畫質零損失**。選「中」「低」才會重新壓縮讓檔案變小。
+- iPhone 瀏覽器的圖片上限約 1600 萬像素；4800 萬或 2400 萬像素的照片會自動縮小到上限內，並在畫面上提示。
+- 轉換時會讓螢幕保持不關閉；請不要切換到其他 App，否則 iOS 可能暫停轉換。
+
+### 部署方式
+
+推送到 `master` 時，GitHub Actions（`.github/workflows/pages.yml`）會自動把 `web/` 資料夾發佈到 GitHub Pages。
+第一次需要在 repo 的 **Settings → Pages → Build and deployment → Source** 選 **GitHub Actions**。
+
+---
+
+## 電腦版安裝
 
 需要 **Python 3.9 以上**。
 
@@ -40,7 +74,7 @@ pip install .
 
 ---
 
-## 基本用法
+## 電腦版用法
 
 ```bash
 mediaconv <檔案或資料夾> -o <輸出資料夾> [選項]
@@ -151,14 +185,46 @@ pytest
 
 測試會即時產生測試用的照片與影片，不需要額外素材。測試涵蓋：各格式互轉、EXIF / GPS 保留、方向轉正、縮圖、品質、透明背景、影片轉 H.264、解析度（橫式／直式／不放大）、GIF、批次與子資料夾、不覆蓋原檔、壞檔處理、撞名處理等。
 
+### 網頁版測試
+
+網頁版的測試會用 Playwright 開啟真的瀏覽器，選檔、轉換，再用 Python 檢查輸出的檔案（格式、尺寸、EXIF、方向、影音編碼）。
+
+```bash
+npm install playwright && npx playwright install chromium
+pip install -e ".[dev]"   # 測試用 Pillow 檢查輸出
+node --test tests/web/e2e.test.mjs
+```
+
+本機預覽網頁版：`python -m http.server -d web 8000`，然後開 <http://localhost:8000>。
+
 ### 專案結構
 
 ```
-mediaconv/
-├── cli.py        命令列介面、進度條、結果統計
-├── converter.py  掃描資料夾、規劃輸出路徑、執行轉換
-├── images.py     照片轉換（Pillow + pillow-heif）
-├── videos.py     影片轉換（ffmpeg）
-└── formats.py    支援的格式定義
-tests/            pytest 測試
+mediaconv/            電腦版（Python）
+├── cli.py            命令列介面、進度條、結果統計
+├── converter.py      掃描資料夾、規劃輸出路徑、執行轉換
+├── images.py         照片轉換（Pillow + pillow-heif）
+├── videos.py         影片轉換（ffmpeg）
+└── formats.py        支援的格式定義
+web/                  網頁版（純前端，不需要建置）
+├── index.html
+├── css/style.css
+├── js/app.js         介面、檔案清單、儲存／分享
+├── js/image.js       照片轉換（瀏覽器解碼 + canvas）
+├── js/exif.js        讀取／修改／寫入 EXIF（JPEG、PNG、WebP、HEIC）
+├── js/video.js       影片轉換（Mediabunny / WebCodecs）與 GIF
+├── sw.js             離線快取
+└── vendor/           第三方函式庫（授權條款見 vendor/licenses/）
+tests/                電腦版 pytest 測試
+tests/web/            網頁版端對端測試
 ```
+
+### 網頁版使用的開源套件
+
+| 套件 | 用途 | 授權 |
+|---|---|---|
+| [Mediabunny](https://mediabunny.dev) 1.61.4 | 影片讀取、轉檔、封裝 | MPL-2.0 |
+| @mediabunny/aac-encoder 1.61.4 | 瀏覽器不能編碼 AAC 時的備援 | MPL-2.0 |
+| [gifenc](https://github.com/mattdesl/gifenc) 1.0.3 | GIF 編碼 | MIT |
+| [heic-to](https://github.com/hoppergee/heic-to) 1.6.6 | 非 Safari 瀏覽器讀取 HEIC 的備援 | LGPL-3.0 |
+| [@jsquash/webp](https://github.com/jamsinclair/jSquash) 1.5.0 | Safari 不能輸出 WebP 時的備援 | Apache-2.0 |
