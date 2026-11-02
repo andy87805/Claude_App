@@ -38,6 +38,7 @@
     <symbol id="i-chevron" viewBox="0 0 24 24"><path d="M9 6l6 6-6 6" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/></symbol>
     <symbol id="i-check" viewBox="0 0 24 24"><path d="M5 12.5l4.5 4.5L19 7.5" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/></symbol>
     <symbol id="i-x" viewBox="0 0 24 24"><path d="M7 7l10 10M17 7L7 17" stroke="currentColor" stroke-width="3" stroke-linecap="round"/></symbol>
+    <symbol id="i-download" viewBox="0 0 24 24"><path d="M12 4v11M7 10l5 5 5-5M5 20h14" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></symbol>
     <symbol id="i-lock" viewBox="0 0 24 24"><rect x="5" y="10" width="14" height="10" rx="2.5" fill="none" stroke="currentColor" stroke-width="2"/><path d="M8 10V7a4 4 0 018 0v3" fill="none" stroke="currentColor" stroke-width="2"/></symbol>
   </svg>
 
@@ -213,6 +214,7 @@
   <div class="actions">
     <button type="button" class="primary" id="convertBtn" disabled>開始轉換</button>
     <button type="button" class="primary" id="saveAllBtn" hidden>全部儲存／分享</button>
+    <button type="button" class="secondary" id="downloadAllBtn" hidden><svg aria-hidden="true"><use href="#i-download"/></svg><span>全部下載</span></button>
   </div>
 
   <template id="itemTemplate">
@@ -225,6 +227,7 @@
         <div class="msg"></div>
       </div>
       <div class="item-actions"></div>
+      <button type="button" class="remove" aria-label="移除這個檔案"><svg aria-hidden="true"><use href="#i-x"/></svg></button>
     </li>
   </template>
 </body>

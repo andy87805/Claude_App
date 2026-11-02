@@ -279,7 +279,7 @@ output { color: var(--muted); margin-left: 4px; font-variant-numeric: tabular-nu
 .file {
   --d: 0;
   display: grid;
-  grid-template-columns: 52px 1fr auto;
+  grid-template-columns: 52px 1fr auto auto;
   gap: 12px; align-items: center;
   background: var(--surface);
   border-radius: var(--radius);
@@ -346,6 +346,23 @@ output { color: var(--muted); margin-left: 4px; font-variant-numeric: tabular-nu
 .file.done .bar span { background-color: var(--ok); }
 .file.failed .bar span { background-color: var(--err); width: 100% !important; }
 .item-actions { display: grid; gap: 6px; }
+.item-actions:empty { display: none; }
+
+/* 個別移除的叉叉 */
+.remove {
+  width: 30px; height: 30px;
+  margin-right: -4px;
+  border: 0; border-radius: 50%;
+  background: var(--surface-2);
+  color: var(--muted);
+  display: grid; place-items: center;
+  font-size: 12px;
+  cursor: pointer;
+  transition: transform 0.15s, background 0.15s, color 0.15s;
+}
+.remove:hover { color: var(--err); }
+.remove:active { transform: scale(0.88); background: color-mix(in srgb, var(--err) 15%, var(--surface-2)); color: var(--err); }
+.file.working .remove, .is-busy .remove { visibility: hidden; }
 .item-actions > * { animation: fadeUp 0.35s 0.15s var(--ease-out) both; }
 .small {
   border: 1px solid var(--line);
@@ -399,15 +416,34 @@ output { color: var(--muted); margin-left: 4px; font-variant-numeric: tabular-nu
 /* ---------- 底部按鈕 ---------- */
 .actions {
   position: fixed; left: 0; right: 0; bottom: 0;
-  padding: 12px 16px calc(12px + env(safe-area-inset-bottom));
+  padding: 12px max(16px, calc((100% - 608px) / 2)) calc(12px + env(safe-area-inset-bottom));
   background: color-mix(in srgb, var(--bg) 82%, transparent);
   -webkit-backdrop-filter: blur(18px);
   backdrop-filter: blur(18px);
   border-top: 1px solid var(--line);
-  display: flex; justify-content: center;
+  display: flex; justify-content: center; gap: 10px;
 }
+.secondary {
+  flex: none;
+  display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+  min-width: 128px;
+  border: 0; border-radius: var(--radius);
+  padding: 15px 18px;
+  font-size: 17px; font-weight: 600;
+  background: var(--accent-soft);
+  color: var(--accent);
+  cursor: pointer;
+  transition: transform 0.2s var(--ease-spring), opacity 0.25s;
+  animation: fadeUp 0.35s 60ms var(--ease-out) both;
+}
+.secondary svg { font-size: 20px; }
+.secondary:active:not(:disabled) { transform: scale(0.97); }
+.secondary:disabled { opacity: 0.5; }
+/* 不能分享的環境（例如電腦）只剩下載按鈕，讓它佔滿整列 */
+#saveAllBtn[hidden] + .secondary { flex: 1; max-width: 608px; background: var(--accent); color: var(--on-accent); }
 .primary {
   position: relative;
+  flex: 1;
   width: 100%; max-width: 608px;
   border: 0; border-radius: var(--radius);
   padding: 15px;

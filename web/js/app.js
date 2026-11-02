@@ -199,6 +199,7 @@ function addFiles(fileList) {
       thumb.append(thumb.querySelector('.badge'));
     }
     if (!kind) setStatus(item, 'failed', '不是照片、影片或 PDF', 'err');
+    li.querySelector('.remove').addEventListener('click', () => removeItem(item));
     items.push(item);
     $('#fileList').append(li);
   }
@@ -209,6 +210,32 @@ function addFiles(fileList) {
   if (items.length) $('#listSection').scrollIntoView({ behavior: 'smooth', block: 'start' });
 }
 
+function refreshList() {
+  $('#listSection').hidden = items.length === 0;
+  $('#count').textContent = items.length ? `(${items.length})` : '';
+  $('#summary').hidden = true; // 清單變了，舊的統計就不準了
+  updateButtons();
+}
+
+function releaseItem(item) {
+  if (item.thumbUrl) URL.revokeObjectURL(item.thumbUrl);
+  if (item.result?.url) URL.revokeObjectURL(item.result.url);
+  if (item.result) usedNames.delete(item.result.file.name.toLowerCase());
+}
+
+/** 移除單一檔案（選錯檔案時用）。 */
+async function removeItem(item) {
+  if (busy || !items.includes(item)) return;
+  items.splice(items.indexOf(item), 1);
+  refreshList();
+  if (!reduceMotion()) {
+    item.el.classList.add('leaving');
+    await new Promise((r) => setTimeout(r, 250));
+  }
+  item.el.remove();
+  releaseItem(item);
+}
+
 async function clearFiles() {
   if (busy) return;
   const old = items.splice(0);
@@ -217,10 +244,7 @@ async function clearFiles() {
     old.forEach((item) => item.el.classList.add('leaving'));
     await new Promise((r) => setTimeout(r, 250));
   }
-  for (const item of old) {
-    if (item.thumbUrl) URL.revokeObjectURL(item.thumbUrl);
-    if (item.result?.url) URL.revokeObjectURL(item.result.url);
-  }
+  old.forEach(releaseItem);
   $('#fileList').replaceChildren();
   $('#listSection').hidden = true;
   $('#summary').hidden = true;
@@ -256,8 +280,13 @@ function updateButtons() {
   const pendingCount = items.filter((i) => i.status === 'queued').length;
   $('#convertBtn').textContent = busy ? `${verb}中…` : pendingCount > 1 ? `開始${verb}（${pendingCount} 個）` : `開始${verb}`;
   $('#convertBtn').hidden = !busy && !pending && done.length > 0;
-  $('#saveAllBtn').hidden = busy || pending || done.length === 0;
+  const finished = !busy && !pending && done.length > 0;
+  $('#saveAllBtn').hidden = !finished || !canShare(done.map((i) => i.result.file));
+  const dl = $('#downloadAllBtn');
+  dl.hidden = !finished;
+  if (!zipping) dl.querySelector('span').textContent = done.length > 1 ? '全部下載' : '下載';
   $('#clearBtn').disabled = busy;
+  document.body.classList.toggle('is-busy', busy);
 }
 
 // ---------- 轉換 ----------
@@ -397,17 +426,50 @@ async function shareFiles(files) {
 
 async function saveAll() {
   const done = items.filter((i) => i.status === 'done').map((i) => i.result.file);
-  if (!done.length) return;
-  if (canShare(done)) return shareFiles(done);
-  // 不能分享的環境（例如電腦），逐一下載
-  for (const item of items.filter((i) => i.status === 'done')) {
-    const a = document.createElement('a');
-    a.href = item.result.url;
-    a.download = item.result.file.name;
-    document.body.append(a);
-    a.click();
-    a.remove();
-    await new Promise((r) => setTimeout(r, 300));
+  if (done.length && canShare(done)) await shareFiles(done);
+}
+
+function triggerDownload(url, name) {
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = name;
+  document.body.append(a);
+  a.click();
+  a.remove();
+}
+
+let zipping = false;
+
+/** 全部下載：一個檔案就直接下載，多個檔案打包成一個 ZIP（iPhone 一次只能可靠地下載一個檔案）。 */
+async function downloadAll() {
+  const done = items.filter((i) => i.status === 'done');
+  if (!done.length || zipping) return;
+  if (done.length === 1) {
+    triggerDownload(done[0].result.url, done[0].result.file.name);
+    return;
+  }
+  const btn = $('#downloadAllBtn');
+  const label = btn.querySelector('span');
+  zipping = true;
+  btn.disabled = true;
+  try {
+    const { makeZip } = await import('./zip.js');
+    const zip = await makeZip(done.map((i) => i.result.file), (p) => {
+      label.textContent = `打包中 ${Math.round(p * 100)}%`;
+    });
+    const d = new Date();
+    const pad = (n) => String(n).padStart(2, '0');
+    const stamp = `${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}-${pad(d.getHours())}${pad(d.getMinutes())}`;
+    const name = `${settings.mode === 'compress' ? '壓縮結果' : '轉檔結果'}-${stamp}.zip`;
+    const url = URL.createObjectURL(zip);
+    triggerDownload(url, name);
+    setTimeout(() => URL.revokeObjectURL(url), 60_000);
+  } catch (err) {
+    alert(`無法打包下載：${err.message || err}`);
+  } finally {
+    zipping = false;
+    btn.disabled = false;
+    updateButtons();
   }
 }
 
@@ -520,6 +582,7 @@ function init() {
   });
   $('#convertBtn').addEventListener('click', convertAll);
   $('#saveAllBtn').addEventListener('click', saveAll);
+  $('#downloadAllBtn').addEventListener('click', downloadAll);
   $('#clearBtn').addEventListener('click', clearFiles);
 
   // 電腦上可以直接把檔案拖進來

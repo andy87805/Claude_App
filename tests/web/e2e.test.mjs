@@ -50,7 +50,8 @@ before(async () => {
   });
   await new Promise((r) => server.listen(0, '127.0.0.1', r));
   baseUrl = `http://localhost:${server.address().port}/`;
-  browser = await chromium.launch();
+  // 使用 UTF-8 語系，中文檔名的下載才不會被改成 download
+  browser = await chromium.launch({ env: { ...process.env, LANG: 'C.UTF-8', LC_ALL: 'C.UTF-8' } });
 });
 
 after(async () => {
@@ -351,4 +352,76 @@ test('轉換格式模式選到 PDF 會提示改用壓縮模式', async () => {
   const x = (await convert(['scan.pdf'], { mode: 'convert' })).results['scan.pdf'];
   assert.equal(x.status, 'failed');
   assert.match(x.msg, /壓縮檔案/);
+});
+
+// ---------------- 移除與全部下載 ----------------
+
+test('選錯檔案可以個別按叉叉移除，剩下的照常轉換', async () => {
+  const page = await browser.newPage();
+  await page.goto(baseUrl);
+  await page.setInputFiles('#fileInput', ['rotated.jpg', 'photo.png', 'broken.jpg'].map((f) => path.join(FIX, f)));
+  assert.equal(await page.textContent('#count'), '(3)');
+
+  await page.locator('.file', { hasText: 'broken.jpg' }).locator('.remove').click();
+  await page.waitForFunction(() => document.querySelectorAll('.file').length === 2);
+  assert.equal(await page.textContent('#count'), '(2)');
+  assert.deepEqual(await page.evaluate(() => window.__app.items.map((i) => i.file.name)), ['rotated.jpg', 'photo.png']);
+
+  await page.click('#convertBtn');
+  await page.waitForFunction(() => window.__app.items.every((i) => i.status === 'done' || i.status === 'failed'));
+  assert.match(await page.textContent('#summary'), /成功 2 個/);
+  assert.doesNotMatch(await page.textContent('#summary'), /失敗/);
+
+  // 全部移除後清單隱藏
+  for (let n = 0; n < 2; n++) await page.locator('.file .remove').first().click();
+  await page.waitForFunction(() => document.querySelectorAll('.file').length === 0);
+  assert.equal(await page.isHidden('#listSection'), true);
+  await page.close();
+});
+
+test('全部下載：一個檔案直接下載，多個檔案打包成 ZIP（中文檔名不亂碼）', async () => {
+  const page = await browser.newPage({ acceptDownloads: true });
+  await page.goto(baseUrl);
+
+  // 一個檔案
+  await page.setInputFiles('#fileInput', [path.join(FIX, 'rotated.jpg')]);
+  await page.click('#convertBtn');
+  await page.waitForSelector('#downloadAllBtn:not([hidden])');
+  assert.equal(await page.isHidden('#saveAllBtn'), true, '不能分享的瀏覽器不顯示「全部儲存／分享」');
+  assert.equal((await page.textContent('#downloadAllBtn')).trim(), '下載');
+  const [single] = await Promise.all([page.waitForEvent('download'), page.click('#downloadAllBtn')]);
+  assert.equal(single.suggestedFilename(), 'rotated.jpg');
+
+  // 多個檔案（含中文檔名）
+  await page.click('#clearBtn');
+  await page.waitForFunction(() => window.__app.items.length === 0);
+  await page.setInputFiles('#fileInput', [
+    { name: '旅行照片.png', mimeType: 'image/png', buffer: fs.readFileSync(path.join(FIX, 'photo.png')) },
+    { name: 'photo.webp', mimeType: 'image/webp', buffer: fs.readFileSync(path.join(FIX, 'photo.webp')) },
+    { name: 'clip.mov', mimeType: 'video/quicktime', buffer: fs.readFileSync(path.join(FIX, 'clip.mov')) },
+  ]);
+  await page.click('#convertBtn');
+  await page.waitForFunction(() => window.__app.items.every((i) => i.status === 'done' || i.status === 'failed'));
+  assert.equal((await page.textContent('#downloadAllBtn')).trim(), '全部下載');
+  const expected = await page.evaluate(async () =>
+    Promise.all(window.__app.items.map(async (i) => ({
+      name: i.result.file.name,
+      size: i.result.file.size,
+      sha: [...new Uint8Array(await crypto.subtle.digest('SHA-256', await i.result.file.arrayBuffer()))]
+        .map((b) => b.toString(16).padStart(2, '0')).join(''),
+    }))),
+  );
+  const [zip] = await Promise.all([page.waitForEvent('download'), page.click('#downloadAllBtn')]);
+  assert.match(zip.suggestedFilename(), /^轉檔結果-\d{8}-\d{4}\.zip$/);
+  const zipPath = path.join(OUT, 'all.zip');
+  await zip.saveAs(zipPath);
+  const listing = JSON.parse(execFileSync('python3', ['-c', `
+import hashlib, json, sys, zipfile
+with zipfile.ZipFile(sys.argv[1]) as z:
+    assert z.testzip() is None
+    print(json.dumps([{"name": i.filename, "size": i.file_size, "sha": hashlib.sha256(z.read(i)).hexdigest()} for i in z.infolist()]))
+`, zipPath], { encoding: 'utf8' }));
+  assert.deepEqual(listing, expected);
+  assert.ok(listing.some((f) => f.name === '旅行照片.jpg'));
+  await page.close();
 });

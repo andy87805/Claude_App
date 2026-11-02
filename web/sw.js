@@ -13,6 +13,7 @@ const PRECACHE = [
   'js/exif.js',
   'js/video.js',
   'js/pdf.js',
+  'js/zip.js',
   'manifest.webmanifest',
   'icons/icon-192.png',
   'icons/apple-touch-icon.png',
