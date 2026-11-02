@@ -43,10 +43,15 @@ const METADATA_LABELS = { keep: '保留拍攝資訊', nogps: '移除位置', non
 const KIND_ICONS = { image: 'i-photo', video: 'i-video', pdf: 'i-pdf' };
 
 const $ = (sel) => document.querySelector(sel);
+const reduceMotion = () => window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
+const isReady = () => document.documentElement.classList.contains('ready');
 
-// 預覽不同風格用：網址加上 ?style=soft 或 ?style=pro
-const styleParam = new URLSearchParams(location.search).get('style');
-if (styleParam) document.documentElement.dataset.style = styleParam;
+/** 重新觸發元素上的 CSS 動畫 class。 */
+function replay(el, cls) {
+  el.classList.remove(cls);
+  void el.offsetWidth; // 讓瀏覽器重新計算，動畫才會重播
+  el.classList.add(cls);
+}
 
 function icon(id, cls = '') {
   return `<svg class="${cls}" aria-hidden="true"><use href="#${id}"/></svg>`;
@@ -99,12 +104,16 @@ function bindSettings() {
   }
 }
 
+let lastMode = null;
+
 function render() {
   for (const group of document.querySelectorAll('.seg[data-setting]')) {
     const value = settings[group.dataset.setting];
-    for (const btn of group.querySelectorAll('button')) {
-      btn.setAttribute('aria-checked', String(btn.dataset.value === value));
-    }
+    const buttons = [...group.querySelectorAll('button')];
+    buttons.forEach((btn) => btn.setAttribute('aria-checked', String(btn.dataset.value === value)));
+    // 滑動的選取底色：告訴 CSS 有幾個選項、選到第幾個
+    group.style.setProperty('--n', buttons.length);
+    group.style.setProperty('--i', Math.max(0, buttons.findIndex((b) => b.dataset.value === value)));
   }
   $('#qualityOut').textContent = settings.quality;
   $('#qualityRow').hidden = settings.imageFormat === 'png';
@@ -113,8 +122,14 @@ function render() {
   for (const el of document.querySelectorAll('.video-only')) el.hidden = isGif;
   $('#metadataNote').textContent = METADATA_NOTES[settings.metadata];
   const compressing = settings.mode === 'compress';
-  for (const el of document.querySelectorAll('.convert-only')) el.hidden = compressing;
-  for (const el of document.querySelectorAll('.compress-only')) el.hidden = !compressing;
+  const modeChanged = lastMode !== null && lastMode !== settings.mode;
+  lastMode = settings.mode;
+  for (const el of document.querySelectorAll('.convert-only, .compress-only')) {
+    const show = el.classList.contains('compress-only') ? compressing : !compressing;
+    el.hidden = !show;
+    // 切換模式時，新出現的區塊淡入
+    if (show && modeChanged) replay(el, 'enter');
+  }
   $('#levelNote').textContent = LEVEL_NOTES[settings.level];
   $('#pickerText').textContent = compressing ? '選擇要壓縮的照片、影片或 PDF' : '選擇要轉換的照片或影片';
   renderChips();
@@ -137,9 +152,14 @@ function renderChips() {
     if (settings.videoFormat !== 'gif' && settings.resolution) chips.push(settings.resolution);
   }
   chips.push(METADATA_LABELS[settings.metadata]);
-  $('#settingsChips').replaceChildren(
+  const box = $('#settingsChips');
+  const key = chips.join('|');
+  if (box.dataset.key === key) return;
+  box.dataset.key = key;
+  box.replaceChildren(
     ...chips.map((text) => Object.assign(document.createElement('span'), { className: 'chip', textContent: text })),
   );
+  if (isReady()) replay(box, 'changed');
 }
 
 // ---------- 檔案清單 ----------
@@ -158,10 +178,12 @@ function formatBytes(n) {
 }
 
 function addFiles(fileList) {
+  let order = 0;
   for (const file of fileList) {
     const kind = kindOf(file);
     const li = $('#itemTemplate').content.firstElementChild.cloneNode(true);
     const item = { file, kind, status: 'queued', el: li, result: null };
+    li.style.setProperty('--d', Math.min(order++, 10)); // 依序進場
     li.querySelector('.name').textContent = file.name;
     const label = { video: '影片', image: '照片', pdf: 'PDF' }[kind] || '不支援';
     li.querySelector('.meta').textContent = `${label} · ${formatBytes(file.size)}`;
@@ -187,13 +209,18 @@ function addFiles(fileList) {
   if (items.length) $('#listSection').scrollIntoView({ behavior: 'smooth', block: 'start' });
 }
 
-function clearFiles() {
+async function clearFiles() {
   if (busy) return;
-  for (const item of items) {
+  const old = items.splice(0);
+  updateButtons();
+  if (!reduceMotion()) {
+    old.forEach((item) => item.el.classList.add('leaving'));
+    await new Promise((r) => setTimeout(r, 250));
+  }
+  for (const item of old) {
     if (item.thumbUrl) URL.revokeObjectURL(item.thumbUrl);
     if (item.result?.url) URL.revokeObjectURL(item.result.url);
   }
-  items.length = 0;
   $('#fileList').replaceChildren();
   $('#listSection').hidden = true;
   $('#summary').hidden = true;
@@ -219,7 +246,12 @@ function setProgress(item, fraction) {
 function updateButtons() {
   const pending = items.some((i) => i.status === 'queued');
   const done = items.filter((i) => i.status === 'done');
-  $('#convertBtn').disabled = busy || !pending;
+  const btn = $('#convertBtn');
+  const wasDisabled = btn.disabled;
+  btn.disabled = busy || !pending;
+  btn.classList.toggle('busy', busy);
+  // 有檔案可以處理時，按鈕輕輕彈一下提示
+  if (wasDisabled && !btn.disabled && isReady()) replay(btn, 'nudge');
   const verb = settings.mode === 'compress' ? '壓縮' : '轉換';
   const pendingCount = items.filter((i) => i.status === 'queued').length;
   $('#convertBtn').textContent = busy ? `${verb}中…` : pendingCount > 1 ? `開始${verb}（${pendingCount} 個）` : `開始${verb}`;
@@ -413,18 +445,65 @@ async function convertAll() {
   const pct = before ? Math.round((saved / before) * 100) : 0;
   summary.replaceChildren();
   summary.classList.toggle('has-failed', failed > 0);
+  replay(summary, 'pop');
   if (settings.mode === 'compress' && doneItems.length) {
     summary.innerHTML = `
-      <div class="sum-big">${saved > 0 ? `省下 <b>${formatBytes(saved)}</b>` : '沒有可以再壓縮的空間'}</div>
-      <div class="sum-meter"><span style="width:${Math.max(2, 100 - pct)}%"></span></div>
+      <div class="sum-big">${saved > 0 ? '省下 <b></b>' : '沒有可以再壓縮的空間'}</div>
+      <div class="sum-meter"><span></span></div>
       <div class="sum-line"></div>
       <div class="sum-status"></div>`;
     summary.querySelector('.sum-line').textContent = `總大小 ${formatBytes(before)} → ${formatBytes(after)}（小了 ${pct}%）`;
+    if (saved > 0) countUp(summary.querySelector('.sum-big b'), saved);
+    // 比例條從 100% 縮到壓縮後的大小
+    const meter = summary.querySelector('.sum-meter span');
+    requestAnimationFrame(() => requestAnimationFrame(() => {
+      meter.style.width = `${Math.max(2, 100 - pct)}%`;
+    }));
   } else {
     summary.innerHTML = `<div class="sum-big">${failed && !doneItems.length ? '沒有成功的檔案' : '完成！'}</div><div class="sum-status"></div>`;
   }
   summary.querySelector('.sum-status').textContent = status;
+  if (doneItems.length && !failed) celebrate(summary);
   summary.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+}
+
+/** 數字從 0 跳到最終值。 */
+function countUp(el, target) {
+  if (reduceMotion()) {
+    el.textContent = formatBytes(target);
+    return;
+  }
+  const start = performance.now();
+  const duration = 900;
+  const step = (now) => {
+    const t = Math.min(1, (now - start) / duration);
+    const eased = 1 - Math.pow(1 - t, 3);
+    el.textContent = formatBytes(Math.round(target * eased));
+    if (t < 1) requestAnimationFrame(step);
+  };
+  el.textContent = formatBytes(0);
+  requestAnimationFrame(step);
+}
+
+/** 完成時的彩色碎紙。 */
+function celebrate(container) {
+  if (reduceMotion()) return;
+  const box = document.createElement('div');
+  box.className = 'confetti';
+  box.setAttribute('aria-hidden', 'true');
+  for (let n = 0; n < 22; n++) {
+    const piece = document.createElement('i');
+    const angle = (Math.PI * 2 * n) / 22 + Math.random() * 0.4;
+    const dist = 70 + Math.random() * 90;
+    piece.style.setProperty('--x', `${Math.cos(angle) * dist * 1.6}px`);
+    piece.style.setProperty('--y', `${Math.sin(angle) * dist - 20}px`);
+    piece.style.setProperty('--r', `${Math.round(Math.random() * 540 - 270)}deg`);
+    piece.style.setProperty('--delay', `${Math.round(Math.random() * 120)}ms`);
+    piece.style.setProperty('--c', `var(--confetti-${(n % 5) + 1})`);
+    box.append(piece);
+  }
+  container.append(box);
+  setTimeout(() => box.remove(), 1500);
 }
 
 // ---------- 初始化 ----------
@@ -432,6 +511,8 @@ async function convertAll() {
 function init() {
   bindSettings();
   render();
+  // 第一次畫面出來之後才開啟過場動畫，避免一打開就看到元件滑來滑去
+  requestAnimationFrame(() => requestAnimationFrame(() => document.documentElement.classList.add('ready')));
 
   $('#fileInput').addEventListener('change', (e) => {
     addFiles(e.target.files);
