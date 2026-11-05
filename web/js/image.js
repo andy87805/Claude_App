@@ -16,7 +16,7 @@ export const COMPRESS_PRESETS = {
 };
 
 // iPhone Safari 的 canvas 面積上限（約 1600 萬像素）
-const IOS_MAX_CANVAS_AREA = 4096 * 4096;
+export const IOS_MAX_CANVAS_AREA = 4096 * 4096;
 
 function isHeicLike(file, bytes) {
   if (/\.(heic|heif|hif)$/i.test(file.name) || /hei[cf]/i.test(file.type)) return true;
@@ -44,7 +44,7 @@ async function decodeWithBrowser(blob) {
 }
 
 /** 讀取照片：回傳原始位元組、可繪製的影像與尺寸。 */
-async function openImage(file) {
+export async function openImage(file) {
   const bytes = new Uint8Array(await file.arrayBuffer());
   let source;
   try {
@@ -63,11 +63,11 @@ async function openImage(file) {
   return { bytes, source, width, height };
 }
 
-function closeImage(img) {
+export function closeImage(img) {
   img.source.close?.();
 }
 
-function fitSize(width, height, maxSize, maxArea) {
+export function fitSize(width, height, maxSize, maxArea) {
   let scale = 1;
   if (maxSize && Math.max(width, height) > maxSize) scale = maxSize / Math.max(width, height);
   if (maxArea && width * height * scale * scale > maxArea) scale = Math.sqrt(maxArea / (width * height));
@@ -77,7 +77,7 @@ function fitSize(width, height, maxSize, maxArea) {
   };
 }
 
-function canvasToBlob(canvas, mime, quality) {
+export function canvasToBlob(canvas, mime, quality) {
   return new Promise((resolve) => canvas.toBlob(resolve, mime, quality));
 }
 
@@ -127,7 +127,7 @@ async function render(img, maxSize, mime, quality, flatten) {
 }
 
 /** 依設定處理 EXIF：保留、移除 GPS 或全部移除。回傳新的 blob。 */
-async function applyExif(blob, img, format, width, height, metadata, warnings) {
+export async function applyExif(blob, img, format, width, height, metadata, warnings) {
   if (metadata === 'none') return blob;
   const exif = extractExif(img.bytes);
   if (!exif) return blob;

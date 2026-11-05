@@ -16,7 +16,13 @@ def image_info(path):
         exif = img.getexif()
         gps = exif.get_ifd(0x8825)
         rgb = img.convert("RGB")
+        alpha = img.getchannel("A") if "A" in img.getbands() else None
         return {
+            "mode": img.mode,
+            "alpha": alpha and {
+                "corner": alpha.getpixel((5, 5)),
+                "center": alpha.getpixel((img.width // 2, img.height // 2)),
+            },
             "kind": "image",
             "format": img.format,
             "size": list(img.size),

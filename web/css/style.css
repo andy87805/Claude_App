@@ -2,6 +2,8 @@
    顏色（淺色／深色模式）— 簡潔原生風格
    ============================================================ */
 :root {
+  --checker-a: #e5e5ea;
+  --checker-b: #ffffff;
   --bg: #f2f2f7;
   --surface: #ffffff;
   --surface-2: #e9e9ee;
@@ -33,6 +35,8 @@
 
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) {
+    --checker-a: #3a3a3c;
+    --checker-b: #2c2c2e;
     --bg: #000000;
     --surface: #1c1c1e;
     --surface-2: #2c2c2e;
@@ -230,6 +234,11 @@ h2 {
   text-align: right;
 }
 .row input[type="range"] { flex: 1; max-width: 62%; accent-color: var(--accent); }
+.row input[type="color"] {
+  width: 56px; height: 34px; padding: 2px;
+  border: 1px solid var(--line); border-radius: var(--radius-sm);
+  background: var(--bg); cursor: pointer;
+}
 output { color: var(--muted); margin-left: 4px; font-variant-numeric: tabular-nums; }
 .note { margin: 8px 0 0; color: var(--muted); font-size: 13px; }
 
@@ -301,6 +310,14 @@ output { color: var(--muted); margin-left: 4px; font-variant-numeric: tabular-nu
   object-fit: cover; border-radius: inherit; z-index: 1;
   animation: fadeIn 0.4s ease both;
 }
+/* 透明背景用格子底表示 */
+.checker, .pv-image {
+  background-color: var(--checker-b);
+  background-image: conic-gradient(var(--checker-a) 25%, transparent 0 50%, var(--checker-a) 0 75%, transparent 0);
+  background-size: 14px 14px;
+}
+.pv-image { --checker-a: #3a3a3c; --checker-b: #2c2c2e; }
+.thumb.checker img { object-fit: contain; }
 .thumb[data-kind="video"] { color: var(--type-video); }
 .thumb[data-kind="pdf"] { color: var(--type-pdf); }
 .thumb[data-kind="image"] { color: var(--type-photo); }

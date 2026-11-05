@@ -23,6 +23,7 @@
 - 照片：HEIC / PNG / WebP / JPG… → **JPG、PNG、WebP**；保留拍攝時間、GPS，並自動轉正
 - 影片：MOV / MP4 / MKV / WebM → **MP4、MOV（H.264）、WebM、GIF**；可選解析度與畫質
 - **壓縮檔案**模式：照片、影片、PDF 都能壓縮（見下方[壓縮功能](#壓縮功能)）
+- **去背**模式：用 AI 自動去掉照片背景，輸出透明 PNG，或換成白色、黑色、自訂顏色的底（見下方[去背](#去背)）
 - 「拍攝資訊」可選全部保留、**只移除 GPS 位置**（分享給別人時建議用），或全部移除
 - 轉好後按「儲存」會開啟 iPhone 的分享選單，選「儲存影像／儲存影片」就會存回相簿
 - 「全部下載」：多個檔案會打包成一個 ZIP（iPhone 會存到「檔案」App），只有一個檔案時直接下載
@@ -71,6 +72,20 @@
 ### 為什麼 HEIC 轉 PNG 會變大好幾倍？
 
 HEIC 是效率很高的**有損**壓縮；PNG 是**無損**格式，每個像素都原封不動記錄下來，所以照片轉 PNG 通常會大 5–10 倍，而且 HEIC 已經損失的細節也救不回來。照片請用 JPG（相容性最好）或 WebP；PNG 適合截圖、圖表和需要透明背景的圖。
+
+---
+
+## 去背
+
+網頁版切換到「**去背**」，選照片後按「開始去背」。
+
+- 使用 [RMBG-1.4](https://huggingface.co/briaai/RMBG-1.4) AI 模型，**在手機上執行，照片不會上傳**。人物、動物、商品等各種主體都適用。
+- 背景可選：**透明**（輸出 PNG，可直接貼到其他圖片或簡報）、**白色**、**黑色**或**自訂顏色**（輸出 JPG）。
+- 可以限制輸出尺寸（例如最長邊 1080 適合社群、512 適合貼圖）；拍攝資訊依設定保留或移除。
+- 第一次使用需要下載約 **110 MB**（模型約 84 MB＋執行程式約 28 MB），建議連 Wi-Fi；之後會存在瀏覽器裡，離線也能用。
+- 每張照片約需 5–20 秒，視手機效能而定。網站會透過 service worker 開啟「跨來源隔離」，讓模型可以用多執行緒執行（約快 2 倍）。
+- 模型選用 fp16 版本：比 42 MB 的量化版大一倍，但量化版去背後背景會留下很多雜點。
+- RMBG-1.4 的授權為**非商業用途免費**（[bria-rmbg-1.4 授權](https://huggingface.co/briaai/RMBG-1.4)）。個人使用沒問題；若要用於商業用途，需另外向 Bria AI 取得授權。
 
 ---
 
@@ -263,7 +278,10 @@ web/                  網頁版（純前端，不需要建置）
 ├── js/image.js       照片轉換與壓縮（瀏覽器解碼 + canvas）
 ├── js/exif.js        讀取／修改／寫入 EXIF（JPEG、PNG、WebP、HEIC）
 ├── js/video.js       影片轉換與壓縮（Mediabunny / WebCodecs）、GIF
-├── js/pdf.js         PDF 壓縮（pdf-lib / PDF.js）
+├── js/pdf.js         PDF 壓縮與預覽（pdf-lib / PDF.js）
+├── js/bgremove.js    去背（Transformers.js + RMBG-1.4）
+├── js/preview.js     預覽視窗
+├── js/zip.js         全部下載時打包成 ZIP
 ├── sw.js             離線快取
 └── vendor/           第三方函式庫（授權條款見 vendor/licenses/）
 tests/                電腦版 pytest 測試
@@ -279,5 +297,7 @@ tests/web/            網頁版端對端測試
 | [gifenc](https://github.com/mattdesl/gifenc) 1.0.3 | GIF 編碼 | MIT |
 | [heic-to](https://github.com/hoppergee/heic-to) 1.6.6 | 非 Safari 瀏覽器讀取 HEIC 的備援 | LGPL-3.0 |
 | [pdf-lib](https://pdf-lib.js.org) 1.17.1 | 讀寫 PDF、替換圖片 | MIT |
-| [PDF.js](https://mozilla.github.io/pdf.js/) 6.4.299 | 強力壓縮時把 PDF 頁面轉成圖片 | Apache-2.0 |
+| [PDF.js](https://mozilla.github.io/pdf.js/) 6.4.299 | 強力壓縮時把 PDF 頁面轉成圖片、PDF 預覽 | Apache-2.0 |
+| [Transformers.js](https://huggingface.co/docs/transformers.js) 4.3.1 | 在瀏覽器執行去背 AI 模型（Transformers.js 與 ONNX Runtime 從 jsDelivr CDN 載入，不在 repo 裡） | Apache-2.0 / MIT |
+| [RMBG-1.4](https://huggingface.co/briaai/RMBG-1.4) 模型 | 去背（使用時從 Hugging Face 下載，不在 repo 裡） | 非商業用途免費 |
 | [@jsquash/webp](https://github.com/jamsinclair/jSquash) 1.5.0 | Safari 不能輸出 WebP 時的備援 | Apache-2.0 |

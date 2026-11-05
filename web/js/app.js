@@ -3,6 +3,9 @@ import { createPreview } from './preview.js';
 
 const DEFAULTS = {
   mode: 'convert',
+  bgColor: 'transparent',
+  bgCustom: '#4f86f7',
+  bgMaxSize: '',
   level: 'standard',
   targetSize: '',
   imageFormat: 'jpg',
@@ -31,6 +34,20 @@ const LEVEL_NOTES = {
 
 const ACCEPT_CONVERT = 'image/*,video/*,.heic,.heif,image/heic,image/heif,.mov,.mkv,.webm';
 const ACCEPT_COMPRESS = `${ACCEPT_CONVERT},application/pdf,.pdf`;
+const ACCEPT_REMOVEBG = 'image/*,.heic,.heif,image/heic,image/heif';
+const MODES = {
+  convert: { verb: '轉換', picker: '選擇要轉換的照片或影片', accept: ACCEPT_CONVERT, title: '轉檔工具', zip: '轉檔結果' },
+  compress: { verb: '壓縮', picker: '選擇要壓縮的照片、影片或 PDF', accept: ACCEPT_COMPRESS, title: '壓縮檔案 · 轉檔工具', zip: '壓縮結果' },
+  removebg: { verb: '去背', picker: '選擇要去背的照片', accept: ACCEPT_REMOVEBG, title: '去背 · 轉檔工具', zip: '去背結果' },
+};
+const BG_LABELS = { transparent: '透明背景', '#ffffff': '白色背景', '#000000': '黑色背景', custom: '自訂背景' };
+const BG_NOTES = {
+  transparent: '輸出透明背景的 PNG，可以直接貼到其他圖片或簡報上。',
+  '#ffffff': '輸出白色背景的 JPG，適合證件照、商品照。',
+  '#000000': '輸出黑色背景的 JPG。',
+  custom: '輸出自訂顏色背景的 JPG。',
+};
+const modeInfo = () => MODES[settings.mode] || MODES.convert;
 
 const METADATA_NOTES = {
   keep: '保留拍攝時間、相機型號、GPS 位置等資訊，存回相簿時會依拍攝時間排列。',
@@ -122,27 +139,33 @@ function render() {
   for (const el of document.querySelectorAll('.gif-only')) el.hidden = !isGif;
   for (const el of document.querySelectorAll('.video-only')) el.hidden = isGif;
   $('#metadataNote').textContent = METADATA_NOTES[settings.metadata];
-  const compressing = settings.mode === 'compress';
+  if (!MODES[settings.mode]) settings.mode = 'convert';
   const modeChanged = lastMode !== null && lastMode !== settings.mode;
   lastMode = settings.mode;
-  for (const el of document.querySelectorAll('.convert-only, .compress-only')) {
-    const show = el.classList.contains('compress-only') ? compressing : !compressing;
+  for (const el of document.querySelectorAll('.convert-only, .compress-only, .removebg-only')) {
+    // 有標記哪些模式要顯示的區塊，只在那些模式出現
+    const show = el.classList.contains(`${settings.mode}-only`);
     el.hidden = !show;
     // 切換模式時，新出現的區塊淡入
     if (show && modeChanged) replay(el, 'enter');
   }
   $('#levelNote').textContent = LEVEL_NOTES[settings.level];
-  $('#pickerText').textContent = compressing ? '選擇要壓縮的照片、影片或 PDF' : '選擇要轉換的照片或影片';
+  $('#pickerText').textContent = modeInfo().picker;
+  $('#bgCustomRow').hidden = settings.bgColor !== 'custom';
+  $('#bgNote').textContent = BG_NOTES[settings.bgColor] || '';
   renderChips();
-  $('#fileInput').accept = compressing ? ACCEPT_COMPRESS : ACCEPT_CONVERT;
-  document.title = compressing ? '壓縮檔案 · 轉檔工具' : '轉檔工具';
+  $('#fileInput').accept = modeInfo().accept;
+  document.title = modeInfo().title;
   updateButtons();
 }
 
 /** 設定區摺起來時，用小標籤顯示目前的設定。 */
 function renderChips() {
   const chips = [];
-  if (settings.mode === 'compress') {
+  if (settings.mode === 'removebg') {
+    chips.push(BG_LABELS[settings.bgColor] || '透明背景');
+    if (settings.bgMaxSize) chips.push(`最長邊 ${settings.bgMaxSize}`);
+  } else if (settings.mode === 'compress') {
     chips.push(LEVEL_LABELS[settings.level]);
     if (settings.targetSize) chips.push(`上限 ${formatBytes(Number(settings.targetSize))}`);
   } else {
@@ -255,11 +278,12 @@ async function clearFiles() {
     old.forEach((item) => item.el.classList.add('leaving'));
     await new Promise((r) => setTimeout(r, 250));
   }
-  old.forEach(releaseItem);
-  $('#fileList').replaceChildren();
-  $('#listSection').hidden = true;
-  $('#summary').hidden = true;
-  updateButtons();
+  // 只移除舊的項目：動畫期間如果又加了新檔案，新檔案要留著
+  old.forEach((item) => {
+    item.el.remove();
+    releaseItem(item);
+  });
+  refreshList();
 }
 
 function setStatus(item, status, message = '', tone = '') {
@@ -287,7 +311,7 @@ function updateButtons() {
   btn.classList.toggle('busy', busy);
   // 有檔案可以處理時，按鈕輕輕彈一下提示
   if (wasDisabled && !btn.disabled && isReady()) replay(btn, 'nudge');
-  const verb = settings.mode === 'compress' ? '壓縮' : '轉換';
+  const verb = modeInfo().verb;
   const pendingCount = items.filter((i) => i.status === 'queued').length;
   $('#convertBtn').textContent = busy ? `${verb}中…` : pendingCount > 1 ? `開始${verb}（${pendingCount} 個）` : `開始${verb}`;
   $('#convertBtn').hidden = !busy && !pending && done.length > 0;
@@ -338,13 +362,36 @@ async function compressItem(item, onProgress) {
   return video.compressVideo(item.file, opts, onProgress);
 }
 
+let bgModule;
+
+async function removeBgItem(item) {
+  if (item.kind !== 'image') throw new Error('去背只支援照片');
+  bgModule ??= await import('./bgremove.js');
+  const background = settings.bgColor === 'custom' ? settings.bgCustom : settings.bgColor;
+  return bgModule.removeBackground(item.file, {
+    background,
+    maxSize: Number(settings.bgMaxSize) || null,
+    metadata: settings.metadata,
+  }, (stage, p) => {
+    if (stage === 'download') {
+      item.el.querySelector('.msg').textContent = `下載 AI 模型 ${Math.round(p * 100)}%（只有第一次需要）`;
+      setProgress(item, Math.max(0.02, p * 0.5));
+    } else {
+      item.el.querySelector('.msg').textContent = '去背中…';
+      setProgress(item, 0.5 + p * 0.5);
+    }
+  });
+}
+
 async function convertItem(item) {
   const compressing = settings.mode === 'compress';
-  setStatus(item, 'working', compressing ? '壓縮中…' : '轉換中…');
+  setStatus(item, 'working', `${modeInfo().verb}中…`);
   setProgress(item, 0.02);
   const onProgress = (p) => setProgress(item, Math.max(0.02, p));
   let result;
-  if (compressing) {
+  if (settings.mode === 'removebg') {
+    result = await removeBgItem(item);
+  } else if (compressing) {
     result = await compressItem(item, onProgress);
     if (result.blob.size >= item.file.size) {
       // 壓縮後沒有比較小：保留原檔
@@ -391,15 +438,29 @@ async function convertItem(item) {
   setProgress(item, 1);
 
   const diff = item.file.size ? Math.round((1 - file.size / item.file.size) * 100) : 0;
-  const change = diff > 0 ? `，小了 ${diff}%` : diff < 0 ? `，大了 ${-diff}%` : '';
+  // 去背的透明 PNG 本來就比原本的 JPG 大，比較大小沒有意義
+  const change = settings.mode === 'removebg' ? '' : diff > 0 ? `，小了 ${diff}%` : diff < 0 ? `，大了 ${-diff}%` : '';
   const text = result.kept
     ? `原檔已經很小，保留原檔：${name}`
     : `完成：${name} · ${formatBytes(file.size)}${change}`;
   const warn = result.warnings.length ? `\n${result.warnings.join('；')}` : '';
   setStatus(item, 'done', text + warn, result.warnings.length ? 'warn' : 'ok');
   item.el.tabIndex = 0;
+  if (settings.mode === 'removebg') showResultThumb(item);
   item.el.setAttribute('aria-label', `${name}，點擊預覽`);
   addItemActions(item);
+}
+
+/** 去背後縮圖改顯示結果（透明的地方用格子底表示）。 */
+function showResultThumb(item) {
+  const thumb = item.el.querySelector('.thumb');
+  thumb.classList.add('checker');
+  let img = thumb.querySelector('img');
+  if (!img) {
+    img = Object.assign(document.createElement('img'), { alt: '', decoding: 'async' });
+    thumb.prepend(img);
+  }
+  img.src = item.result.url;
 }
 
 function addItemActions(item) {
@@ -473,7 +534,7 @@ async function downloadAll() {
     const d = new Date();
     const pad = (n) => String(n).padStart(2, '0');
     const stamp = `${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}-${pad(d.getHours())}${pad(d.getMinutes())}`;
-    const name = `${settings.mode === 'compress' ? '壓縮結果' : '轉檔結果'}-${stamp}.zip`;
+    const name = `${modeInfo().zip}-${stamp}.zip`;
     const url = URL.createObjectURL(zip);
     triggerDownload(url, name);
     setTimeout(() => URL.revokeObjectURL(url), 60_000);

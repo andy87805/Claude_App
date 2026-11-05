@@ -80,6 +80,25 @@ def text_pdf(path, pages=2):
     pdf.save(path)
 
 
+def apple(path):
+    """桌上的一顆蘋果：給去背測試用（主體在中間，背景是天空漸層和桌面）。"""
+    from PIL import ImageDraw
+
+    w, h = 1200, 900
+    img = Image.new("RGB", (w, h))
+    d = ImageDraw.Draw(img)
+    for y in range(h):
+        d.line([(0, y), (w, y)], fill=(120 + y // 10, 170, 210 - y // 12))
+    img = Image.blend(img, Image.effect_noise((w, h), 25).convert("RGB"), 0.15)
+    d = ImageDraw.Draw(img)
+    d.rectangle([0, 650, w, h], fill=(150, 110, 80))
+    d.ellipse([430, 280, 770, 620], fill=(200, 30, 40))
+    d.ellipse([500, 330, 580, 410], fill=(240, 120, 120))
+    d.rectangle([592, 220, 608, 300], fill=(90, 60, 30))
+    d.ellipse([608, 215, 700, 265], fill=(60, 150, 50))
+    img.filter(ImageFilter.GaussianBlur(0.8)).save(path, quality=92, exif=exif_bytes(1))
+
+
 def ffmpeg(*args):
     subprocess.run(["ffmpeg", "-loglevel", "error", "-y", *args], check=True)
 
@@ -95,6 +114,7 @@ def main(out: Path):
     (out / "broken.jpg").write_bytes(b"this is not an image")
 
     noisy((3000, 2000)).save(out / "noisy.jpg", quality=95, exif=exif_bytes(1))
+    apple(out / "apple.jpg")
 
     image_pdf(out / "scan.pdf", noisy((1654, 2339)), dpi=200)
     image_pdf(out / "flate.pdf", noisy((800, 1100)), dpi=150, flate=True)

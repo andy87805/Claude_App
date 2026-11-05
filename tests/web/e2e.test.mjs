@@ -497,3 +497,75 @@ test('預覽影片與 PDF', async () => {
   assert.deepEqual(errors, []);
   await page.close();
 });
+
+// ---------------- 去背 ----------------
+// 第一次執行會從 Hugging Face 下載 AI 模型（約 42 MB），需要網路。
+
+test('去背：透明背景 PNG、白色背景 JPG，非照片給出清楚錯誤', { timeout: 600_000 }, async () => {
+  const { results: r } = await convert(['apple.jpg', 'scan.pdf'], { mode: 'removebg', bgColor: 'transparent' });
+  const a = r['apple.jpg'];
+  assert.equal(a.status, 'done', a.msg);
+  assert.equal(a.name, 'apple.png');
+  assert.equal(a.info.format, 'PNG');
+  assert.equal(a.info.mode, 'RGBA');
+  assert.deepEqual(a.info.size, [1200, 900]);
+  assert.ok(a.info.alpha.corner < 20, `背景應該透明：${a.info.alpha.corner}`);
+  assert.ok(a.info.alpha.center > 235, `主體應該保留：${a.info.alpha.center}`);
+  assert.equal(a.info.taken, '2024:05:01 10:20:30', '拍攝時間要保留');
+  assert.equal(r['scan.pdf'].status, 'failed');
+  assert.match(r['scan.pdf'].msg, /只支援照片/);
+
+  const w = (await convert(['apple.jpg'], { mode: 'removebg', bgColor: '#ffffff', bgMaxSize: '512' })).results['apple.jpg'];
+  assert.equal(w.status, 'done', w.msg);
+  assert.equal(w.name, 'apple.jpg');
+  assert.equal(w.info.format, 'JPEG');
+  assert.deepEqual(w.info.size, [512, 384]);
+  assert.ok(w.info.topLeft.every((c) => c > 240), `背景應該是白色：${w.info.topLeft}`);
+  const [r0, g0, b0] = w.info.center;
+  assert.ok(r0 > 150 && g0 < 90 && b0 < 90, `中間應該還是紅色蘋果：${w.info.center}`);
+});
+
+test('跨來源隔離（多執行緒）模式下，轉換、壓縮、PDF、預覽、ZIP 都正常', { timeout: 300_000 }, async () => {
+  const context = await browser.newContext({ acceptDownloads: true });
+  const page = await context.newPage();
+  const errors = [];
+  page.on('pageerror', (e) => errors.push(e));
+  await page.goto(baseUrl);
+  await page.evaluate(() => navigator.serviceWorker.ready);
+  await page.reload(); // 讓 service worker 接管頁面並補上隔離標頭
+  assert.equal(await page.evaluate(() => crossOriginIsolated), true);
+
+  const run = async (files, mode) => {
+    await page.evaluate((m) => document.querySelector(`.mode button[data-value="${m}"]`).click(), mode);
+    await page.setInputFiles('#fileInput', files.map((f) => path.join(FIX, f)));
+    await page.click('#convertBtn');
+    await page.waitForFunction(() => window.__app.items.every((i) => i.status === 'done' || i.status === 'failed'));
+    return page.evaluate(() => window.__app.items.map((i) => `${i.file.name}:${i.status}`));
+  };
+  assert.deepEqual(await run(['photo.heic', 'clip.mov'], 'convert'), ['photo.heic:done', 'clip.mov:done']);
+  await page.click('#clearBtn');
+  await page.waitForFunction(() => window.__app.items.length === 0);
+  assert.deepEqual(await run(['scan.pdf', 'noisy.jpg'], 'compress'), ['scan.pdf:done', 'noisy.jpg:done']);
+
+  await page.locator('.file', { hasText: 'scan.pdf' }).locator('.name').click();
+  await page.waitForFunction(() => document.querySelectorAll('.pv-page').length === 1, null, { timeout: 30_000 });
+  await page.click('.pv-close');
+  await page.waitForFunction(() => !document.querySelector('#preview').open);
+
+  const [zip] = await Promise.all([page.waitForEvent('download'), page.click('#downloadAllBtn')]);
+  assert.match(zip.suggestedFilename(), /\.zip$/);
+  assert.deepEqual(errors, []);
+  await context.close();
+});
+
+test('按「清除」後馬上加新檔案，新檔案不會被清掉', async () => {
+  const page = await browser.newPage();
+  await page.goto(baseUrl);
+  await page.setInputFiles('#fileInput', [path.join(FIX, 'rotated.jpg')]);
+  await page.click('#clearBtn');
+  await page.setInputFiles('#fileInput', [path.join(FIX, 'photo.png')]);
+  await page.waitForTimeout(500); // 等清除動畫結束
+  assert.deepEqual(await page.evaluate(() => [...document.querySelectorAll('.file .name')].map((e) => e.textContent)), ['photo.png']);
+  assert.equal(await page.isHidden('#listSection'), false);
+  await page.close();
+});
