@@ -507,6 +507,8 @@ html.pv-open, html.pv-open body { overflow: hidden; }
 .preview {
   position: fixed; inset: 0;
   width: 100%; height: 100%;
+  height: 100dvh; /* iPhone：只算看得到的範圍，不被 Safari 的網址列、工具列蓋住 */
+  touch-action: pan-x pan-y; /* 預覽裡不要雙指縮放整個網頁 */
   max-width: none; max-height: none;
   margin: 0; padding: 0; border: 0;
   background: #000;
@@ -551,21 +553,28 @@ html.pv-open, html.pv-open body { overflow: hidden; }
   position: absolute; inset: 0;
   display: grid; place-items: center;
   overflow: hidden;
-  touch-action: pan-y pinch-zoom;
+  container-type: size; /* 讓照片依可用空間縮放 */
+  touch-action: pan-x pan-y;
 }
+.pv-stage:focus { outline: none; }
 .pv-stage.slide-left > * { animation: slideL 0.3s var(--ease-out) both; }
 .pv-stage.slide-right > * { animation: slideR 0.3s var(--ease-out) both; }
 .pv-image {
   max-width: 100%; max-height: 100%;
+  max-width: calc(100cqw - 24px); max-height: calc(100cqh - 24px); /* 四周留一點空間，整張照片一定放得下 */
   object-fit: contain;
   cursor: zoom-in;
   animation: fadeIn 0.3s ease both;
   user-select: none; -webkit-user-select: none;
 }
-.pv-stage.zoomed { overflow: auto; place-items: start; touch-action: auto; }
+.pv-stage.zoomed { overflow: auto; place-items: start; }
 .pv-stage.zoomed .pv-image { max-width: none; max-height: none; cursor: zoom-out; }
-.pv-video { max-width: 100%; max-height: 100%; background: #000; animation: fadeIn 0.3s ease both; }
-.pv-stage.pdf { overflow: auto; place-items: start center; background: #1c1c1e; touch-action: pan-y pinch-zoom; }
+.pv-video {
+  max-width: 100%; max-height: 100%;
+  max-width: 100cqw; max-height: 100cqh;
+  background: #000; animation: fadeIn 0.3s ease both;
+}
+.pv-stage.pdf { overflow: auto; place-items: start center; background: #1c1c1e; }
 .pv-pages { display: grid; gap: 12px; padding: 16px; justify-items: center; width: 100%; }
 .pv-page {
   width: min(100%, 900px); height: auto;

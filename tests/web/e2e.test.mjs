@@ -13,7 +13,9 @@ import { fileURLToPath } from 'node:url';
 import { createRequire } from 'node:module';
 
 const require = createRequire(import.meta.url);
-const { chromium } = require('playwright');
+// 預設用 Chromium；BROWSER=webkit 時用 Safari 的引擎（需要先 npx playwright install webkit）
+const playwright = require('playwright');
+const engine = playwright[process.env.BROWSER || 'chromium'];
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const WEB_ROOT = path.resolve(HERE, '../../web');
@@ -51,7 +53,7 @@ before(async () => {
   await new Promise((r) => server.listen(0, '127.0.0.1', r));
   baseUrl = `http://localhost:${server.address().port}/`;
   // 使用 UTF-8 語系，中文檔名的下載才不會被改成 download
-  browser = await chromium.launch({ env: { ...process.env, LANG: 'C.UTF-8', LC_ALL: 'C.UTF-8' } });
+  browser = await engine.launch({ env: { ...process.env, LANG: 'C.UTF-8', LC_ALL: 'C.UTF-8' } });
 });
 
 after(async () => {
@@ -465,11 +467,26 @@ test('預覽照片：點擊檔案開啟、可切換原檔比較、可左右切�
   await page.waitForFunction(() => document.querySelector('.pv-name').textContent === 'rotated.jpg');
   await page.waitForFunction(() => document.querySelector('.pv-image')?.naturalWidth > 0);
 
-  // 點照片放大、再點縮回
+  // 整張照片要放得進畫面（不會超出）
+  const fits = await page.evaluate(() => {
+    const img = document.querySelector('.pv-image').getBoundingClientRect();
+    const stage = document.querySelector('.pv-stage').getBoundingClientRect();
+    return img.width <= stage.width && img.height <= stage.height;
+  });
+  assert.equal(fits, true, '預覽的照片應該完整放在畫面內');
+
+  // 點一下不會放大；點兩下放大、再點兩下縮回
+  const zoomed = () => page.evaluate(() => document.querySelector('.pv-stage').classList.contains('zoomed'));
   await page.click('.pv-image');
-  assert.equal(await page.evaluate(() => document.querySelector('.pv-stage').classList.contains('zoomed')), true);
+  await page.waitForTimeout(400);
+  assert.equal(await zoomed(), false, '點一下不應該放大');
+  await page.click('.pv-image', { clickCount: 1 });
+  await page.click('.pv-image', { clickCount: 1, delay: 0 });
+  assert.equal(await zoomed(), true);
+  await page.waitForTimeout(400);
   await page.click('.pv-image');
-  assert.equal(await page.evaluate(() => document.querySelector('.pv-stage').classList.contains('zoomed')), false);
+  await page.click('.pv-image');
+  assert.equal(await zoomed(), false);
 
   // 鍵盤 Esc 關閉
   await page.keyboard.press('Escape');

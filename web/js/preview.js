@@ -104,7 +104,17 @@ export function createPreview(deps) {
         if (!myToken.cancelled) setInfo(file, `${img.naturalWidth} × ${img.naturalHeight}`);
       });
       img.addEventListener('error', () => showMessage('這個瀏覽器無法預覽這種格式'));
-      img.addEventListener('click', (e) => toggleZoom(img, e));
+      // 點兩下才放大（點一下不會，避免滑動切換時不小心放大）
+      let lastTap = null;
+      img.addEventListener('click', (e) => {
+        const now = Date.now();
+        if (lastTap && now - lastTap.t < 350 && Math.hypot(e.clientX - lastTap.x, e.clientY - lastTap.y) < 40) {
+          lastTap = null;
+          toggleZoom(img, e);
+        } else {
+          lastTap = { t: now, x: e.clientX, y: e.clientY };
+        }
+      });
       img.src = url;
       stage.append(img);
     } else if (kind === 'video') {
