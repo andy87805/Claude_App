@@ -227,10 +227,11 @@ describe("工具", () => {
     expect(init.serverInfo.name).toBe("onedrive");
   });
 
-  it("列出六個工具，沒有刪除功能", async () => {
+  it("列出七個工具，沒有刪除功能", async () => {
     const { tools } = await rpc(session, "tools/list");
     expect(tools.map((tool: any) => tool.name).sort()).toEqual([
       "onedrive_create_folder",
+      "onedrive_create_upload_session",
       "onedrive_get_item",
       "onedrive_list",
       "onedrive_read_file",
@@ -309,6 +310,24 @@ describe("工具", () => {
       if_exists: "replace",
     });
     expect(mock.state.uploads.at(-1)).toEqual({ path: "文件/已存在.txt", behavior: "replace", body: "位元組" });
+  });
+
+  it("建立大檔案上傳連結：預設不覆蓋", async () => {
+    const made = await call(session, "onedrive_create_upload_session", { path: "/文件/大 檔.docx" });
+    const result = JSON.parse(made.content[0].text);
+    expect(result.upload_url).toBe(`${mock.base}/upload-session/abc`);
+    expect(result.expires).toBe("2026-11-11T00:00:00Z");
+    expect(result.how_to_upload.join("\n")).toContain("Content-Range");
+    expect(mock.state.sessions.at(-1)).toEqual({
+      path: "文件/大 檔.docx",
+      body: { item: { "@microsoft.graph.conflictBehavior": "fail" } },
+    });
+
+    await call(session, "onedrive_create_upload_session", { path: "/文件/大 檔.docx", if_exists: "replace" });
+    expect(mock.state.sessions.at(-1).body.item["@microsoft.graph.conflictBehavior"]).toBe("replace");
+
+    const bad = await call(session, "onedrive_create_upload_session", { path: "/" });
+    expect(bad.isError).toBe(true);
   });
 
   it("拒絕含 .. 的路徑與非 Graph 的 cursor", async () => {

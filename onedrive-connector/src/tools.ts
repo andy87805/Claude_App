@@ -280,6 +280,48 @@ export function createServer(graph: Graph): McpServer {
   );
 
   server.registerTool(
+    "onedrive_create_upload_session",
+    {
+      title: "建立大檔案上傳連結",
+      description:
+        "為任何大小的檔案（Word、PDF、圖片等二進位檔，或超過 4 MB 的檔案）建立暫時的上傳連結 upload_url。" +
+        "拿到後用 curl 把本機檔案直接 PUT 到 upload_url，檔案內容不必經過工具參數。" +
+        "上傳連結不需登入即可寫入這一個檔案，過期前請勿外流。預設不覆蓋同名檔案；只有使用者明確要求時才用 if_exists=replace。",
+      inputSchema: {
+        path: z.string().min(1).describe('要存放的完整路徑（含檔名），例如 "/文件/報告.docx"。上層資料夾必須已存在。'),
+        if_exists: z
+          .enum(["fail", "rename", "replace"])
+          .optional()
+          .describe("同名檔案已存在時：fail（預設）上傳完成時失敗、rename 自動改名、replace 覆蓋。"),
+      },
+      annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
+    },
+    guard(async ({ path, if_exists }) => {
+      if (!encodePath(path)) return fail("path 必須包含檔名。");
+      const session = await graph.json<{ uploadUrl: string; expirationDateTime?: string }>(
+        itemUrl({ path }, "/createUploadSession"),
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ item: { "@microsoft.graph.conflictBehavior": if_exists ?? "fail" } }),
+        },
+      );
+      return text({
+        upload_url: session.uploadUrl,
+        expires: session.expirationDateTime,
+        how_to_upload: [
+          "不要加 Authorization 標頭；upload_url 本身已含授權。",
+          "60 MB 以內的檔案一次送完（SIZE 是檔案的位元組數）：",
+          'curl -sS -X PUT -H "Content-Range: bytes 0-$((SIZE-1))/$SIZE" --data-binary @檔案 "<upload_url>"',
+          "更大的檔案要分段：每段大小必須是 327680 位元組的倍數（最後一段除外），每段各自帶 Content-Range，依序上傳。",
+          "回應 201 或 200 並帶有檔案資訊（id、name）表示完成；202 表示還有後續分段；409 表示同名檔案已存在。",
+          "要放棄時對 upload_url 送 DELETE。",
+        ],
+      });
+    }),
+  );
+
+  server.registerTool(
     "onedrive_create_folder",
     {
       title: "建立 OneDrive 資料夾",

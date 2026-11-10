@@ -15,9 +15,18 @@ Claude 內建的 Microsoft 365 連接器只接受公司或學校帳號，所以�
 | `onedrive_get_item` | 查看單一檔案的資訊，並取得暫時下載連結 |
 | `onedrive_read_file` | 讀取檔案內容（見下表） |
 | `onedrive_upload_file` | 上傳檔案（上限 4 MB；預設不會覆蓋同名檔案） |
+| `onedrive_create_upload_session` | 建立暫時的上傳連結，用來上傳 Word、PDF 等二進位檔或大檔案（見下方說明） |
 | `onedrive_create_folder` | 建立資料夾 |
 
 **沒有刪除、搬移、改名的功能。** 唯一會動到既有檔案的情況，是你明確要求 Claude 覆蓋同名檔案。
+
+### 上傳 Word、PDF 或大檔案
+
+`onedrive_upload_file` 要把整個檔案內容放進工具參數，只適合小的文字檔。二進位檔或大檔案改用 `onedrive_create_upload_session`：它回傳一個暫時的上傳連結，Claude 再從自己的執行環境用 `curl` 把檔案直接傳上去。
+
+- 只有 Claude 有執行環境（能跑指令）時才用得到，例如 Claude Code；一般聊天沒有檔案可傳。
+- Claude Code 雲端工作階段預設擋掉大部分對外連線，要把上傳連結的網域加進環境的網路允許清單才傳得出去。網域以工具實際回傳的 `upload_url` 為準。
+- 上傳連結不需登入就能寫入那一個檔案，過期前請當成密碼一樣保管。
 
 `onedrive_read_file` 對不同檔案的處理：
 
@@ -123,5 +132,5 @@ npm test
 | `src/index.ts` | 進入點：OAuth 設定、`/mcp` 端點 |
 | `src/auth.ts` | 同意畫面、Microsoft 登入與回呼 |
 | `src/microsoft.ts` | Microsoft 登入與 Graph API 的呼叫 |
-| `src/tools.ts` | 六個 OneDrive 工具 |
+| `src/tools.ts` | 七個 OneDrive 工具 |
 | `src/extract.ts` | Word／PowerPoint／Excel 文字抽取 |

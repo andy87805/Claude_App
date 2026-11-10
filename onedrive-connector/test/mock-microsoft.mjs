@@ -45,7 +45,7 @@ const item = (id, base) => {
 };
 
 export function startMock(port, { email = "owner@outlook.com" } = {}) {
-  const state = { email, expireFirstToken: false, uploads: [], folders: [], calls: [] };
+  const state = { email, expireFirstToken: false, uploads: [], sessions: [], folders: [], calls: [] };
   const base = `http://127.0.0.1:${port}`;
 
   const server = createServer(async (req, res) => {
@@ -106,6 +106,11 @@ export function startMock(port, { email = "owner@outlook.com" } = {}) {
       const data = JSON.parse(body.toString());
       state.folders.push(data);
       return json(201, { id: "d-new", name: data.name, folder: { childCount: 0 }, parentReference: { path: "/drive/root:/%E6%96%87%E4%BB%B6" } });
+    }
+    const session = p.match(/^\/me\/drive\/root:\/(.+):\/createUploadSession$/);
+    if (session && req.method === "POST") {
+      state.sessions.push({ path: session[1], body: JSON.parse(body.toString()) });
+      return json(200, { uploadUrl: `${base}/upload-session/abc`, expirationDateTime: "2026-11-11T00:00:00Z" });
     }
     const upload = p.match(/^\/me\/drive\/root:\/(.+):\/content$/);
     if (upload && req.method === "PUT") {
