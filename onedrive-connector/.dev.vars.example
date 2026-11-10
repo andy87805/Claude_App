@@ -1,0 +1,4 @@
+# 本機測試用（npm run dev）。複製成 .dev.vars 再填入；.dev.vars 不會進 git。
+MS_CLIENT_ID=
+MS_CLIENT_SECRET=
+ALLOWED_EMAILS=you@outlook.com

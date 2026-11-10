@@ -1,0 +1,10 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "onedrive-connector",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-10-01",
+  "compatibility_flags": ["nodejs_compat"],
+  // 存放登入授權資料。沒有寫 id：第一次 `wrangler deploy` 會自動建立。
+  "kv_namespaces": [{ "binding": "OAUTH_KV" }],
+  "observability": { "enabled": true }
+}
