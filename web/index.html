@@ -5,8 +5,8 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <title>轉檔工具</title>
   <meta name="description" content="在手機上直接轉換、壓縮照片、影片與 PDF，檔案不會上傳。">
-  <meta name="theme-color" content="#f2f2f7" media="(prefers-color-scheme: light)">
-  <meta name="theme-color" content="#000000" media="(prefers-color-scheme: dark)">
+  <meta name="theme-color" content="#ebebed" media="(prefers-color-scheme: light)">
+  <meta name="theme-color" content="#0b0b0c" media="(prefers-color-scheme: dark)">
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-title" content="轉檔">
@@ -40,17 +40,19 @@
     <symbol id="i-x" viewBox="0 0 24 24"><path d="M7 7l10 10M17 7L7 17" stroke="currentColor" stroke-width="3" stroke-linecap="round"/></symbol>
     <symbol id="i-download" viewBox="0 0 24 24"><path d="M12 4v11M7 10l5 5 5-5M5 20h14" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></symbol>
     <symbol id="i-magic" viewBox="0 0 24 24"><path d="M4 20L15 9M13 7l4 4" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><path d="M18 2.5l.9 2.1 2.1.9-2.1.9-.9 2.1-.9-2.1-2.1-.9 2.1-.9zM8 3l.6 1.4L10 5l-1.4.6L8 7l-.6-1.4L6 5l1.4-.6zM19 13l.6 1.4 1.4.6-1.4.6L19 17l-.6-1.4L17 15l1.4-.6z" fill="currentColor"/></symbol>
+    <symbol id="i-arrow" viewBox="0 0 24 24"><path d="M5 12h14M13 6l6 6-6 6" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+    <symbol id="i-alert" viewBox="0 0 24 24"><path d="M12 7v6" stroke="currentColor" stroke-width="2.6" stroke-linecap="round"/><circle cx="12" cy="17" r="1.5" fill="currentColor"/></symbol>
     <symbol id="i-lock" viewBox="0 0 24 24"><rect x="5" y="10" width="14" height="10" rx="2.5" fill="none" stroke="currentColor" stroke-width="2"/><path d="M8 10V7a4 4 0 018 0v3" fill="none" stroke="currentColor" stroke-width="2"/></symbol>
   </svg>
 
   <main>
     <header class="hero">
       <div class="brand">
-        <span class="brand-icon" aria-hidden="true"><svg><use href="#i-convert"/></svg></span>
         <div>
           <h1>轉檔工具</h1>
-          <p class="sub"><svg class="inline-icon" aria-hidden="true"><use href="#i-lock"/></svg>全部在手機上處理，檔案不會上傳</p>
+          <p class="sub">照片、影片、PDF 都在手機上處理</p>
         </div>
+        <div class="live" title="檔案只在這台裝置上處理"><i></i>不會上傳</div>
       </div>
 
       <div class="seg seg-full mode" role="radiogroup" aria-label="模式" data-setting="mode">
@@ -82,14 +84,16 @@
       <ul id="fileList" class="files"></ul>
     </section>
 
-    <details class="settings" id="settingsPanel">
-      <summary>
-        <span class="settings-title"><svg aria-hidden="true"><use href="#i-gear"/></svg>設定</span>
+    <section class="settings" id="settingsPanel">
+      <button type="button" class="settings-head" id="settingsToggle" aria-expanded="false" aria-controls="settingsBody">
+        <span class="settings-title">設定</span>
         <span class="chips" id="settingsChips"></span>
-        <svg class="chevron" aria-hidden="true"><use href="#i-chevron"/></svg>
-      </summary>
+        <i class="toggle-ic" aria-hidden="true"><svg><use href="#i-plus"/></svg></i>
+      </button>
+      <div class="settings-body" id="settingsBody">
+      <div class="settings-inner">
 
-      <section class="card removebg-only" aria-labelledby="bgTitle">
+      <section class="group removebg-only" aria-labelledby="bgTitle">
         <h2 id="bgTitle"><svg class="inline-icon" aria-hidden="true"><use href="#i-magic"/></svg>去背</h2>
         <div class="row">
           <span class="label">背景</span>
@@ -117,7 +121,7 @@
         <p class="note">AI 模型在手機上執行，照片不會上傳。第一次使用需要下載約 110 MB（建議連 Wi-Fi），之後離線也能用。每張照片約需 5–20 秒。</p>
       </section>
 
-      <section class="card compress-only" aria-labelledby="compressTitle">
+      <section class="group compress-only" aria-labelledby="compressTitle">
         <h2 id="compressTitle">壓縮程度</h2>
         <div class="seg seg-full" role="radiogroup" aria-label="壓縮程度" data-setting="level">
           <button type="button" data-value="light">輕度</button>
@@ -142,7 +146,7 @@
         <p class="note">照片會存成 JPG、影片存成 MP4。壓縮後如果沒有變小，會直接保留原檔。</p>
       </section>
 
-      <section class="card convert-only" aria-labelledby="photoTitle">
+      <section class="group convert-only" aria-labelledby="photoTitle">
         <h2 id="photoTitle"><svg class="inline-icon" aria-hidden="true"><use href="#i-photo"/></svg>照片</h2>
         <div class="row">
           <span class="label">轉成</span>
@@ -153,7 +157,7 @@
           </div>
         </div>
         <div class="row" id="qualityRow">
-          <label class="label" for="quality">品質 <output id="qualityOut">85</output></label>
+          <label class="label" for="quality">品質 <output id="qualityOut" class="roll">85</output></label>
           <input type="range" id="quality" min="40" max="100" step="5" data-setting="quality">
         </div>
         <div class="row">
@@ -168,7 +172,7 @@
         </div>
       </section>
 
-      <section class="card convert-only" aria-labelledby="videoTitle">
+      <section class="group convert-only" aria-labelledby="videoTitle">
         <h2 id="videoTitle"><svg class="inline-icon" aria-hidden="true"><use href="#i-video"/></svg>影片</h2>
         <div class="row">
           <span class="label">轉成</span>
@@ -224,7 +228,7 @@
         </div>
       </section>
 
-      <section class="card" aria-labelledby="privacyTitle">
+      <section class="group" aria-labelledby="privacyTitle">
         <h2 id="privacyTitle">拍攝資訊</h2>
         <div class="seg seg-full" role="radiogroup" data-setting="metadata">
           <button type="button" data-value="keep">全部保留</button>
@@ -233,7 +237,9 @@
         </div>
         <p class="note" id="metadataNote"></p>
       </section>
-    </details>
+      </div>
+      </div>
+    </section>
 
     <p class="footer">
       影片建議 1–2 分鐘以內；太長的影片可能因為手機記憶體不足而失敗。<br>
@@ -242,10 +248,16 @@
   </main>
 
   <div class="actions">
-    <button type="button" class="primary" id="convertBtn" disabled>開始轉換</button>
+    <button type="button" class="primary sbtn" id="convertBtn" disabled>
+      <span class="s1"><span class="btn-label">開始轉換</span><svg aria-hidden="true"><use href="#i-arrow"/></svg></span>
+      <span class="s2" aria-hidden="true"><i class="spin"></i><span class="busy-label">處理中</span></span>
+      <span class="s3" aria-hidden="true"><svg><use href="#i-check"/></svg>完成</span>
+    </button>
     <button type="button" class="primary" id="saveAllBtn" hidden>全部儲存／分享</button>
     <button type="button" class="secondary" id="downloadAllBtn" hidden><svg aria-hidden="true"><use href="#i-download"/></svg><span>全部下載</span></button>
   </div>
+
+  <div class="toasts" id="toasts" aria-live="polite"></div>
 
   <dialog id="preview" class="preview" aria-label="預覽">
     <div class="pv-top">
@@ -277,7 +289,7 @@
     <li class="file">
       <div class="thumb"><span class="badge" aria-hidden="true"></span></div>
       <div class="info">
-        <div class="name"></div>
+        <div class="name-row"><div class="name"></div><span class="pct roll" aria-hidden="true"></span></div>
         <div class="meta"></div>
         <div class="bar"><span></span></div>
         <div class="msg"></div>

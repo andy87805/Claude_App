@@ -64,6 +64,65 @@ const $ = (sel) => document.querySelector(sel);
 const reduceMotion = () => window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
 const isReady = () => document.documentElement.classList.contains('ready');
 
+/**
+ * 滾動數字：每個數字像計數器一樣轉到新的值（非數字的字元直接換掉）。
+ * 螢幕閱讀器讀 aria-label，不會唸出 0–9 的捲軸。
+ */
+function roll(el, value) {
+  const str = String(value);
+  const isDigit = (c) => c >= '0' && c <= '9';
+  el.setAttribute('aria-label', str);
+  const same = el._s && el._s.length === str.length && [...str].every((c, i) => isDigit(c) === isDigit(el._s[i]));
+  if (same) {
+    [...str].forEach((c, i) => {
+      const node = el.children[i];
+      if (isDigit(c)) node.firstChild.style.transform = `translateY(${-c * 10}%)`;
+      else node.textContent = c === ' ' ? '\u00a0' : c;
+    });
+  } else {
+    const prev = el._s || '';
+    el.innerHTML = [...str]
+      .map((c, i) =>
+        isDigit(c)
+          ? `<span class="dg" aria-hidden="true"><span class="st" style="transition-delay:${(str.length - 1 - i) * 45}ms;transform:translateY(${isDigit(prev[i] || '') ? -prev[i] * 10 : 0}%)">${'0123456789'.split('').map((d) => `<i>${d}</i>`).join('')}</span></span>`
+          : `<span aria-hidden="true">${c === ' ' ? '&nbsp;' : c}</span>`,
+      )
+      .join('');
+    void el.offsetWidth;
+    [...str].forEach((c, i) => {
+      if (isDigit(c)) el.children[i].firstChild.style.transform = `translateY(${-c * 10}%)`;
+    });
+  }
+  el._s = str;
+}
+
+/** 從上方彈出的通知，新的在最上面、舊的往後疊。 */
+function toast(title, sub = '', { error = false, iconId } = {}) {
+  const box = $('#toasts');
+  const t = document.createElement('div');
+  t.className = `toast new${error ? ' err' : ''}`;
+  t.setAttribute('role', error ? 'alert' : 'status');
+  t.innerHTML = `<i>${icon(iconId || (error ? 'i-alert' : 'i-check'))}</i><div></div>`;
+  const text = t.querySelector('div');
+  text.textContent = title;
+  if (sub) text.append(Object.assign(document.createElement('small'), { textContent: sub }));
+  [...box.children].forEach((x) => {
+    const k = Number(x.style.getPropertyValue('--k') || 0) + 1;
+    x.style.setProperty('--k', k);
+    if (k > 2) {
+      x.classList.add('bye');
+      setTimeout(() => x.remove(), 400);
+    }
+  });
+  box.prepend(t);
+  void t.offsetWidth;
+  t.classList.remove('new');
+  setTimeout(() => {
+    t.classList.add('bye');
+    setTimeout(() => t.remove(), 400);
+  }, error ? 6000 : 3200);
+}
+
 /** 重新觸發元素上的 CSS 動畫 class。 */
 function replay(el, cls) {
   el.classList.remove(cls);
@@ -133,7 +192,11 @@ function render() {
     group.style.setProperty('--n', buttons.length);
     group.style.setProperty('--i', Math.max(0, buttons.findIndex((b) => b.dataset.value === value)));
   }
-  $('#qualityOut').textContent = settings.quality;
+  roll($('#qualityOut'), settings.quality);
+  for (const range of document.querySelectorAll('input[type="range"]')) {
+    const v = ((range.value - range.min) / (range.max - range.min)) * 100;
+    range.style.setProperty('--v', `${v}%`);
+  }
   $('#qualityRow').hidden = settings.imageFormat === 'png';
   const isGif = settings.videoFormat === 'gif';
   for (const el of document.querySelectorAll('.gif-only')) el.hidden = !isGif;
@@ -214,11 +277,15 @@ function addFiles(fileList) {
     const thumb = li.querySelector('.thumb');
     thumb.dataset.kind = kind || 'unknown';
     thumb.insertAdjacentHTML('afterbegin', icon(KIND_ICONS[kind] || 'i-x', 'kind-icon'));
+    thumb.classList.toggle('no-img', kind !== 'image');
     if (kind === 'image') {
       // 縮圖蓋在圖示上面；瀏覽器讀不了的格式（例如電腦上的 HEIC）就留下圖示
       item.thumbUrl = URL.createObjectURL(file);
       const img = Object.assign(document.createElement('img'), { src: item.thumbUrl, alt: '', decoding: 'async' });
-      img.addEventListener('error', () => img.remove());
+      img.addEventListener('error', () => {
+        img.remove();
+        thumb.classList.add('no-img');
+      });
       thumb.prepend(img);
       thumb.append(thumb.querySelector('.badge'));
     }
@@ -299,7 +366,9 @@ function setStatus(item, status, message = '', tone = '') {
 }
 
 function setProgress(item, fraction) {
-  item.el.querySelector('.bar span').style.width = `${Math.round(fraction * 100)}%`;
+  const pct = Math.round(fraction * 100);
+  item.el.querySelector('.bar span').style.width = `${pct}%`;
+  roll(item.el.querySelector('.pct'), `${pct}%`);
 }
 
 function updateButtons() {
@@ -307,15 +376,16 @@ function updateButtons() {
   const done = items.filter((i) => i.status === 'done');
   const btn = $('#convertBtn');
   const wasDisabled = btn.disabled;
-  btn.disabled = busy || !pending;
-  btn.classList.toggle('busy', busy);
+  btn.disabled = busy || finishing || !pending;
+  btn.classList.toggle('load', busy);
   // 有檔案可以處理時，按鈕輕輕彈一下提示
   if (wasDisabled && !btn.disabled && isReady()) replay(btn, 'nudge');
   const verb = modeInfo().verb;
   const pendingCount = items.filter((i) => i.status === 'queued').length;
-  $('#convertBtn').textContent = busy ? `${verb}中…` : pendingCount > 1 ? `開始${verb}（${pendingCount} 個）` : `開始${verb}`;
-  $('#convertBtn').hidden = !busy && !pending && done.length > 0;
-  const finished = !busy && !pending && done.length > 0;
+  btn.querySelector('.btn-label').textContent = pendingCount > 1 ? `開始${verb}（${pendingCount} 個）` : `開始${verb}`;
+  btn.querySelector('.busy-label').textContent = `${verb}中`;
+  btn.hidden = !busy && !finishing && !pending && done.length > 0;
+  const finished = !busy && !finishing && !pending && done.length > 0;
   $('#saveAllBtn').hidden = !finished || !canShare(done.map((i) => i.result.file));
   const dl = $('#downloadAllBtn');
   dl.hidden = !finished;
@@ -494,7 +564,7 @@ async function shareFiles(files) {
   try {
     await navigator.share({ files });
   } catch (err) {
-    if (err.name !== 'AbortError') alert(`無法分享：${err.message}`);
+    if (err.name !== 'AbortError') toast('無法分享', err.message, { error: true });
   }
 }
 
@@ -513,6 +583,7 @@ function triggerDownload(url, name) {
 }
 
 let zipping = false;
+let finishing = false; // 按鈕正在顯示「完成」
 
 /** 全部下載：一個檔案就直接下載，多個檔案打包成一個 ZIP（iPhone 一次只能可靠地下載一個檔案）。 */
 async function downloadAll() {
@@ -520,6 +591,7 @@ async function downloadAll() {
   if (!done.length || zipping) return;
   if (done.length === 1) {
     triggerDownload(done[0].result.url, done[0].result.file.name);
+    toast('已開始下載', done[0].result.file.name, { iconId: 'i-download' });
     return;
   }
   const btn = $('#downloadAllBtn');
@@ -537,9 +609,10 @@ async function downloadAll() {
     const name = `${modeInfo().zip}-${stamp}.zip`;
     const url = URL.createObjectURL(zip);
     triggerDownload(url, name);
+    toast('已開始下載', `${name} · ${formatBytes(zip.size)}`, { iconId: 'i-download' });
     setTimeout(() => URL.revokeObjectURL(url), 60_000);
   } catch (err) {
-    alert(`無法打包下載：${err.message || err}`);
+    toast('無法打包下載', String(err.message || err), { error: true });
   } finally {
     zipping = false;
     btn.disabled = false;
@@ -568,6 +641,19 @@ async function convertAll() {
   }
   wakeLock?.release?.().catch(() => {});
   busy = false;
+  const ok = items.some((i) => i.status === 'done');
+  if (ok && !reduceMotion()) {
+    // 按鈕先翻成綠色的「完成」，再換成儲存／下載
+    finishing = true;
+    const btn = $('#convertBtn');
+    btn.classList.remove('load');
+    btn.classList.add('done');
+    setTimeout(() => {
+      finishing = false;
+      btn.classList.remove('done');
+      updateButtons();
+    }, 1300);
+  }
   updateButtons();
 
   const doneItems = items.filter((i) => i.status === 'done');
@@ -582,64 +668,45 @@ async function convertAll() {
   summary.replaceChildren();
   summary.classList.toggle('has-failed', failed > 0);
   replay(summary, 'pop');
+  const verb = modeInfo().verb;
   if (settings.mode === 'compress' && doneItems.length) {
     summary.innerHTML = `
-      <div class="sum-big">${saved > 0 ? '省下 <b></b>' : '沒有可以再壓縮的空間'}</div>
-      <div class="sum-meter"><span></span></div>
-      <div class="sum-line"></div>
-      <div class="sum-status"></div>`;
-    summary.querySelector('.sum-line').textContent = `總大小 ${formatBytes(before)} → ${formatBytes(after)}（小了 ${pct}%）`;
-    if (saved > 0) countUp(summary.querySelector('.sum-big b'), saved);
-    // 比例條從 100% 縮到壓縮後的大小
-    const meter = summary.querySelector('.sum-meter span');
+      <div class="ring" aria-hidden="true">
+        <svg viewBox="0 0 120 120"><circle cx="60" cy="60" r="52"/><circle class="v" cx="60" cy="60" r="52"/></svg>
+        <div><strong><span class="roll ring-pct"></span><sup>%</sup></strong><small>省下</small></div>
+      </div>
+      <div class="sum-text">
+        <div class="sum-label">壓縮完成</div>
+        <div class="sum-big"></div>
+        <div class="sum-line"></div>
+        <div class="sum-status"></div>
+      </div>`;
+    const big = summary.querySelector('.sum-big');
+    if (saved > 0) {
+      big.innerHTML = '省下 <span class="roll"></span>';
+      roll(big.querySelector('.roll'), formatBytes(saved));
+    } else {
+      big.textContent = '已經很小了';
+    }
+    summary.querySelector('.sum-line').textContent = `總大小 ${formatBytes(before)} → ${formatBytes(after)}`;
+    roll(summary.querySelector('.ring-pct'), Math.max(0, pct));
+    // 圓環從 0 長到省下的比例
+    const arc = summary.querySelector('.ring .v');
     requestAnimationFrame(() => requestAnimationFrame(() => {
-      meter.style.width = `${Math.max(2, 100 - pct)}%`;
+      arc.style.strokeDashoffset = 326.7 * (1 - Math.max(0, pct) / 100);
     }));
   } else {
-    summary.innerHTML = `<div class="sum-big">${failed && !doneItems.length ? '沒有成功的檔案' : '完成！'}</div><div class="sum-status"></div>`;
+    const allFailed = failed && !doneItems.length;
+    summary.innerHTML = `
+      <div class="done-ic" aria-hidden="true">${icon(allFailed ? 'i-alert' : 'i-check')}</div>
+      <div class="sum-text">
+        <div class="sum-label">${verb}${allFailed ? '失敗' : '完成'}</div>
+        <div class="sum-big">${allFailed ? '沒有成功的檔案' : '完成！'}</div>
+        <div class="sum-status"></div>
+      </div>`;
   }
   summary.querySelector('.sum-status').textContent = status;
-  if (doneItems.length && !failed) celebrate(summary);
   summary.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
-}
-
-/** 數字從 0 跳到最終值。 */
-function countUp(el, target) {
-  if (reduceMotion()) {
-    el.textContent = formatBytes(target);
-    return;
-  }
-  const start = performance.now();
-  const duration = 900;
-  const step = (now) => {
-    const t = Math.min(1, (now - start) / duration);
-    const eased = 1 - Math.pow(1 - t, 3);
-    el.textContent = formatBytes(Math.round(target * eased));
-    if (t < 1) requestAnimationFrame(step);
-  };
-  el.textContent = formatBytes(0);
-  requestAnimationFrame(step);
-}
-
-/** 完成時的彩色碎紙。 */
-function celebrate(container) {
-  if (reduceMotion()) return;
-  const box = document.createElement('div');
-  box.className = 'confetti';
-  box.setAttribute('aria-hidden', 'true');
-  for (let n = 0; n < 22; n++) {
-    const piece = document.createElement('i');
-    const angle = (Math.PI * 2 * n) / 22 + Math.random() * 0.4;
-    const dist = 70 + Math.random() * 90;
-    piece.style.setProperty('--x', `${Math.cos(angle) * dist * 1.6}px`);
-    piece.style.setProperty('--y', `${Math.sin(angle) * dist - 20}px`);
-    piece.style.setProperty('--r', `${Math.round(Math.random() * 540 - 270)}deg`);
-    piece.style.setProperty('--delay', `${Math.round(Math.random() * 120)}ms`);
-    piece.style.setProperty('--c', `var(--confetti-${(n % 5) + 1})`);
-    box.append(piece);
-  }
-  container.append(box);
-  setTimeout(() => box.remove(), 1500);
 }
 
 // ---------- 初始化 ----------
@@ -665,6 +732,10 @@ function init() {
     e.target.value = '';
   });
   $('#convertBtn').addEventListener('click', convertAll);
+  $('#settingsToggle').addEventListener('click', () => {
+    const open = $('#settingsPanel').classList.toggle('open');
+    $('#settingsToggle').setAttribute('aria-expanded', String(open));
+  });
   $('#saveAllBtn').addEventListener('click', saveAll);
   $('#downloadAllBtn').addEventListener('click', downloadAll);
   $('#clearBtn').addEventListener('click', clearFiles);
