@@ -97,6 +97,31 @@ aside{position:sticky;top:20px;display:flex;flex-direction:column;gap:16px}
 .tools .btn{padding:0 10px}
 .tools .btn .ic{width:16px;height:16px}
 .note{font-size:12px;color:var(--mute);margin-top:12px;line-height:1.5}
+.bk{border-radius:16px;background:var(--soft);padding:12px;margin-bottom:10px;font-size:12px;line-height:1.5}
+.bk .st{display:flex;align-items:flex-start;gap:8px;font-weight:600;color:var(--ink)}
+.bk .st>i{width:8px;height:8px;border-radius:50%;background:var(--mute);flex:none;margin-top:5px}
+.bk.ok .st>i{background:var(--accent);box-shadow:0 0 0 3px rgba(43,217,107,.2)}
+.bk.wait .st>i{background:#f5b34a;box-shadow:0 0 0 3px rgba(245,179,74,.2)}
+.bk.bad .st>i{background:var(--danger)}
+.bk.bad .st{color:var(--danger)}
+.bk .st b{font-weight:700;word-break:break-all}
+.bk small{display:block;color:var(--mute);font-weight:500;margin-top:2px}
+.bk .acts{display:flex;gap:6px;margin-top:10px;flex-wrap:wrap}
+.bk .acts .btn{flex:1}
+.link{font-size:12px;font-weight:600;color:var(--mute);text-decoration:underline;text-underline-offset:3px;margin-top:10px;display:inline-flex;align-items:center;gap:5px}
+.link:hover{color:var(--ink)}
+.link .ic{width:14px;height:14px}
+.steps{list-style:none;counter-reset:st;display:flex;flex-direction:column;gap:14px;margin-bottom:4px}
+.steps li{counter-increment:st;display:flex;gap:12px;line-height:1.6}
+.steps li::before{content:counter(st);width:24px;height:24px;border-radius:50%;background:var(--ink);color:var(--on-ink);display:grid;place-items:center;font-size:12px;font-weight:700;flex:none;margin-top:1px}
+.steps li>div{flex:1;min-width:0}
+.steps b{font-weight:700}
+.cmd{display:flex;align-items:center;gap:8px;margin-top:8px;background:var(--soft);border-radius:12px;padding:8px 8px 8px 12px}
+.cmd code{flex:1;min-width:0;font:12px/1.5 ui-monospace,Consolas,monospace;word-break:break-all;user-select:all}
+.cmd .btn{flex:none}
+.tip{margin-top:14px;padding:12px 14px;border-radius:14px;box-shadow:inset 0 0 0 1.5px var(--line);font-size:12px;color:var(--mute);line-height:1.7}
+.tip b{color:var(--ink)}
+.tip.warn{box-shadow:inset 0 0 0 1.5px var(--danger);color:var(--danger)}
 .note.warn{color:var(--danger);font-weight:600}
 .keys{display:flex;flex-direction:column;gap:9px;font-size:12px;color:var(--mute)}
 .keys div{display:flex;align-items:center;justify-content:space-between;gap:8px}
@@ -276,6 +301,7 @@ textarea.inp{height:150px;min-height:110px;max-height:46vh;padding:12px 14px;res
   .tools-card{padding:14px}
   .tools-card .lbl{display:none}
   .tools-card .note{margin-top:8px}
+  .tools-card .link{display:none}
 }
 @media (min-width:821px){.cat.add-c{display:none}}
 @media (max-width:600px){
@@ -313,6 +339,8 @@ textarea.inp{height:150px;min-height:110px;max-height:46vh;padding:12px 14px;res
   <symbol id="folder" viewBox="0 0 24 24"><path d="M3.5 7.5a2 2 0 0 1 2-2H10l2 2h6.5a2 2 0 0 1 2 2V17a2 2 0 0 1-2 2h-13a2 2 0 0 1-2-2z"/></symbol>
   <symbol id="file" viewBox="0 0 24 24"><path d="M7 3h7l4 4v14H7zM14 3v4h4"/></symbol>
   <symbol id="rows" viewBox="0 0 24 24"><path d="M9 6h11M9 12h11M9 18h11M4.5 6h.01M4.5 12h.01M4.5 18h.01" stroke-width="2.4"/></symbol>
+  <symbol id="cloud" viewBox="0 0 24 24"><path d="M7 18.5h10a4 4 0 0 0 .6-7.95A5.5 5.5 0 0 0 7 9.5a4.5 4.5 0 0 0 0 9z"/></symbol>
+  <symbol id="key" viewBox="0 0 24 24"><rect x="3" y="6" width="18" height="12" rx="2.5"/><path d="M7 10h.01M11 10h.01M15 10h.01M8 14h8"/></symbol>
   <symbol id="inbox" viewBox="0 0 24 24"><path d="M4 13l2.5-7.5h11L20 13v5.5A1.5 1.5 0 0 1 18.5 20h-13A1.5 1.5 0 0 1 4 18.5z"/><path d="M4 13h4.5l1 2.5h5l1-2.5H20"/></symbol>
 </svg>
 
@@ -331,11 +359,13 @@ textarea.inp{height:150px;min-height:110px;max-height:46vh;padding:12px 14px;res
     </section>
     <section class="card tools-card">
       <div class="lbl">備份</div>
+      <div class="bk" id="bk"></div>
       <div class="tools">
         <button class="btn ghost sm" id="expBtn" type="button"><svg class="ic"><use href="#down"/></svg>匯出</button>
         <button class="btn ghost sm" id="impBtn" type="button"><svg class="ic"><use href="#up"/></svg>匯入</button>
       </div>
-      <p class="note" id="note">資料只存在這台電腦的瀏覽器裡，不會上傳。換電腦或清除瀏覽資料前請先匯出備份。</p>
+      <p class="note" id="note">資料存在這台電腦的瀏覽器裡，不會上傳。瀏覽器資料被清除時，按「匯入」選備份檔就能還原。</p>
+      <button class="link" id="lnkBtn" type="button"><svg class="ic"><use href="#key"/></svg>用快捷鍵開啟（桌面捷徑）</button>
       <input type="file" id="impFile" accept=".json,application/json" hidden>
     </section>
     <section class="card keys-card">
@@ -442,6 +472,7 @@ function save(){
   try{localStorage.setItem(KEY,JSON.stringify(db));storageOK=true}catch(e){storageOK=false}
   const n=$('#note');
   if(!storageOK){n.classList.add('warn');n.textContent='這個瀏覽器不允許儲存資料，關閉頁面後內容會消失，請記得用「匯出」備份。'}
+  backupCheck();
   return true;
 }
 
@@ -1027,8 +1058,21 @@ document.addEventListener('paste',e=>{
 });
 
 /* ---------- 匯出／匯入 ---------- */
+const exportData=()=>({app:'clipbox',version:1,exported:new Date().toISOString(),cats:db.cats,items:db.items});
+// 合併備份：目前只有範例資料時直接換成備份內容；否則加入不重複的項目
+function mergeIn(d){
+  if(seeded){db=d;seeded=false;applyPrefs();return {add:d.items.length,skip:0}}
+  const map={};
+  d.cats.forEach(c=>{let m=db.cats.find(x=>x.name===c.name);if(!m){m={id:uid(),name:c.name,color:c.color};db.cats.push(m)}map[c.id]=m.id});
+  let add=0,skip=0;
+  d.items.forEach(i=>{
+    if(db.items.some(x=>x.content===i.content&&x.title===i.title)){skip++;return}
+    db.items.push({...i,id:uid(),cat:i.cat?map[i.cat]||null:null});add++;
+  });
+  return {add,skip};
+}
 $('#expBtn').addEventListener('click',()=>{
-  const d=new Date(),data={app:'clipbox',version:1,exported:d.toISOString(),cats:db.cats,items:db.items};
+  const d=new Date(),data=exportData();
   const url=URL.createObjectURL(new Blob([JSON.stringify(data,null,2)],{type:'application/json'}));
   const a=document.createElement('a');a.href=url;a.download=`clipboard-backup-${VARS.date(d)}.json`;document.body.append(a);a.click();a.remove();
   setTimeout(()=>URL.revokeObjectURL(url),2000);
@@ -1040,26 +1084,185 @@ $('#impFile').addEventListener('change',async e=>{
   let d;
   try{d=normalize(JSON.parse(await f.text()))}catch(err){d=null}
   if(!d||(!d.items.length&&!d.cats.length)){toast('看不懂這個檔案，請選擇匯出的 .json 備份','x',{bad:true,ms:3000});return}
-  const map={};
-  d.cats.forEach(c=>{let m=db.cats.find(x=>x.name===c.name);if(!m){m={id:uid(),name:c.name,color:c.color};db.cats.push(m)}map[c.id]=m.id});
-  let add=0,skip=0;
-  d.items.forEach(i=>{
-    if(db.items.some(x=>x.content===i.content&&x.title===i.title)){skip++;return}
-    db.items.push({...i,id:uid(),cat:i.cat?map[i.cat]||null:null});add++;
-  });
+  const {add,skip}=mergeIn(d);
   save();render(true);
   toast(`已匯入 ${add} 則${skip?`，略過重複 ${skip} 則`:''}`,'up',{ms:3000});
 });
 
+/* ---------- 自動備份：有修改才寫入使用者選的資料夾，平常不讀取 ---------- */
+const FS_OK=typeof window.showDirectoryPicker==='function';
+const BK_FILE='clipboard-backup.json', BK_DAY=/^clipboard-backup-\d{4}-\d\d-\d\d\.json$/, BK_KEEP=30;
+const lsGet=k=>{try{return localStorage.getItem(k)}catch(e){return null}};
+const lsSet=(k,v)=>{try{localStorage.setItem(k,v)}catch(e){}};
+const BK={dir:null,perm:'none',sig:lsGet(KEY+'.bsig')||'',last:+lsGet(KEY+'.blast')||0,err:'',timer:0,running:false,again:false,asking:false};
+function kv(mode,fn){
+  return new Promise((res,rej)=>{
+    const o=indexedDB.open('clipbox',1);
+    o.onupgradeneeded=()=>o.result.createObjectStore('kv');
+    o.onerror=()=>rej(o.error);
+    o.onsuccess=()=>{const con=o.result,tx=con.transaction('kv',mode),q=fn(tx.objectStore('kv'));
+      tx.oncomplete=()=>{con.close();res(q&&q.result)};tx.onerror=()=>{con.close();rej(tx.error)}};
+  });
+}
+const kvGet=k=>kv('readonly',st=>st.get(k)), kvPut=(k,v)=>kv('readwrite',st=>st.put(v,k)), kvDel=k=>kv('readwrite',st=>st.delete(k));
+// 只比對「內容」：複製次數、排序偏好改變不需要備份
+function sig(){
+  const str=JSON.stringify([db.cats,db.items.map(i=>[i.id,i.title,i.content,i.cat,i.pin,i.priv,i.lines])]);
+  let h1=0xdeadbeef,h2=0x41c6ce57;
+  for(let i=0;i<str.length;i++){const c=str.charCodeAt(i);h1=Math.imul(h1^c,2654435761);h2=Math.imul(h2^c,1597334677)}
+  h1=Math.imul(h1^(h1>>>16),2246822507)^Math.imul(h2^(h2>>>13),3266489909);
+  h2=Math.imul(h2^(h2>>>16),2246822507)^Math.imul(h1^(h1>>>13),3266489909);
+  return (h2>>>0).toString(36)+(h1>>>0).toString(36)+'.'+str.length;
+}
+const bkPending=()=>!!BK.dir&&!seeded&&sig()!==BK.sig;
+function backupCheck(){
+  if(!BK.dir||seeded||sig()===BK.sig){renderBk();return}
+  if(BK.perm!=='granted')askPerm(); // 修改的當下就是使用者操作，瀏覽器才允許跳出詢問
+  clearTimeout(BK.timer);BK.timer=setTimeout(runBackup,1200);
+  renderBk();
+}
+async function askPerm(){
+  if(!BK.dir||BK.asking)return;
+  BK.asking=true;
+  try{BK.perm=await BK.dir.requestPermission({mode:'readwrite'})}catch(e){BK.perm='prompt'}
+  BK.asking=false;renderBk();
+  if(BK.perm==='granted')runBackup();
+}
+async function writeText(dir,name,text){
+  const fh=await dir.getFileHandle(name,{create:true});
+  const w=await fh.createWritable();await w.write(text);await w.close();
+}
+async function runBackup(force){
+  if(!BK.dir||BK.perm!=='granted'||seeded){renderBk();return}
+  if(BK.running){BK.again=true;return}
+  const s=sig();
+  if(s===BK.sig&&!force){renderBk();return}
+  BK.running=true;
+  const text=JSON.stringify(exportData(),null,2);
+  try{
+    await writeText(BK.dir,BK_FILE,text);
+    await writeText(BK.dir,`clipboard-backup-${VARS.date(new Date())}.json`,text);
+    const days=[];
+    for await(const [name,h] of BK.dir.entries())if(h.kind==='file'&&BK_DAY.test(name))days.push(name);
+    days.sort().reverse().slice(BK_KEEP).forEach(n=>BK.dir.removeEntry(n).catch(()=>{}));
+    BK.sig=s;BK.last=Date.now();BK.err='';
+    lsSet(KEY+'.bsig',s);lsSet(KEY+'.blast',String(BK.last));
+  }catch(e){
+    const was=BK.err;
+    BK.err=e&&e.name==='NotFoundError'?'找不到備份資料夾（可能被移動或刪除）':e&&e.name==='NotAllowedError'?'沒有寫入備份資料夾的權限':'備份失敗：'+(e&&e.message||e);
+    if(e&&e.name==='NotAllowedError')BK.perm='prompt';
+    if(!was)toast('自動備份失敗','x',{bad:true,ms:4000,sub:BK.err});
+  }
+  BK.running=false;renderBk();
+  if(BK.again){BK.again=false;runBackup()}
+}
+async function setupBackup(){
+  let dir;
+  try{dir=await window.showDirectoryPicker({id:'clipbox-backup',mode:'readwrite',startIn:'documents'})}
+  catch(e){if(e&&e.name!=='AbortError')toast('無法選擇資料夾','x',{bad:true,sub:e.message});return}
+  // 資料夾裡已經有備份 → 先合併進來，絕不直接覆蓋
+  let note='';
+  try{
+    const fh=await dir.getFileHandle(BK_FILE);
+    const d=normalize(JSON.parse(await (await fh.getFile()).text()));
+    if(d&&d.items.length){const r=mergeIn(d);if(r.add){note=`已從原有備份加入 ${r.add} 則`;render(true)}}
+  }catch(e){}
+  BK.dir=dir;BK.perm='granted';BK.err='';
+  try{await kvPut('bkdir',dir)}catch(e){toast('瀏覽器無法記住這個資料夾，下次開啟需要重新設定','x',{bad:true,ms:4000})}
+  if(seeded)seeded=false; // 設定備份代表要開始使用，範例也一起存起來
+  save();
+  await runBackup(true);
+  if(!BK.err)toast(`已開始自動備份到「${dir.name}」`,'cloud',{ms:3600,sub:note||'之後每次修改都會自動更新備份檔'});
+}
+async function stopBackup(){
+  BK.dir=null;BK.perm='none';BK.err='';clearTimeout(BK.timer);
+  try{await kvDel('bkdir')}catch(e){}
+  renderBk();toast('已停止自動備份','cloud');
+}
+function renderBk(){
+  const el=$('#bk');if(!el)return;
+  let cls='',html;
+  if(!FS_OK){
+    html=`<div class="st"><i></i><div>這個瀏覽器不支援自動備份<small>請改用 Edge 或 Chrome，或定期按「匯出」</small></div></div>`;
+  }else if(!BK.dir){
+    html=`<div class="st"><i></i><div>尚未設定自動備份<small>建議在 OneDrive 裡新增一個資料夾（例如「剪貼簿備份」）並選它，之後每次修改都會自動存一份</small></div></div>
+      <div class="acts"><button class="btn sm" type="button" data-bk="setup">${ic('cloud')}設定自動備份</button></div>`;
+  }else if(BK.err){
+    cls='bad';
+    html=`<div class="st"><i></i><div>${esc(BK.err)}<small>備份資料夾：${esc(BK.dir.name)}</small></div></div>
+      <div class="acts"><button class="btn sm" type="button" data-bk="setup">重新選擇資料夾</button>${BK.perm!=='granted'?`<button class="btn ghost sm" type="button" data-bk="allow">允許</button>`:''}</div>`;
+  }else if(BK.perm==='granted'){
+    cls=bkPending()?'wait':'ok';
+    html=`<div class="st"><i></i><div>自動備份到「<b>${esc(BK.dir.name)}</b>」<small>${bkPending()?'正在備份…':BK.last?'上次備份：'+ago(BK.last):'已設定'}</small></div></div>
+      <div class="acts"><button class="btn line sm" type="button" data-bk="setup">更換資料夾</button><button class="btn line sm" type="button" data-bk="stop">停止</button></div>`;
+  }else{
+    cls=bkPending()?'wait':'ok';
+    html=`<div class="st"><i></i><div>自動備份到「<b>${esc(BK.dir.name)}</b>」<small>${bkPending()?'有修改尚未備份，需要你允許寫入':'下次修改時，瀏覽器會請你允許寫入一次'}${BK.last?' · 上次備份：'+ago(BK.last):''}</small></div></div>
+      <div class="acts">${bkPending()?`<button class="btn sm" type="button" data-bk="allow">允許並備份</button>`:''}<button class="btn line sm" type="button" data-bk="setup">更換資料夾</button><button class="btn line sm" type="button" data-bk="stop">停止</button></div>`;
+  }
+  el.className='bk '+cls;el.innerHTML=html;
+}
+$('#bk').addEventListener('click',e=>{
+  const b=e.target.closest('[data-bk]');if(!b)return;
+  const a=b.dataset.bk;
+  if(a==='setup')setupBackup();else if(a==='stop')stopBackup();else if(a==='allow')askPerm();
+});
+async function initBackup(){
+  if(FS_OK){
+    try{
+      const d=await kvGet('bkdir');
+      if(d){BK.dir=d;BK.perm=await d.queryPermission({mode:'readwrite'})}
+    }catch(e){BK.dir=null}
+  }
+  renderBk();
+  if(bkPending()&&BK.perm==='granted')runBackup(); // 上次有修改沒備份到，這次補上（只寫不讀）
+}
+
+/* ---------- 快捷鍵開啟：Edge 應用程式模式捷徑 ---------- */
+function openShortcutHelp(){
+  const url=decodeURI(location.href.split('#')[0].split('?')[0]);
+  const local=location.protocol==='file:';
+  const cmd=`"C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe" --app="${url}"`;
+  const tooLong=cmd.length>259;
+  openModal(`<h3>用快捷鍵開啟<button class="x" type="button" data-close="1" title="關閉 (Esc)">${ic('x')}</button></h3>
+    <p class="hint" style="margin:-8px 0 16px">建立一個桌面捷徑，用 Edge 的「應用程式模式」開啟：沒有網址列和分頁，像獨立程式一樣，還能設定快速鍵。不需要安裝任何東西或管理員權限。</p>
+    ${local?'':`<div class="tip warn" style="margin:0 0 14px">目前不是從電腦裡的檔案開啟。請先把 clipboard.html 存到電腦（例如「文件」資料夾），用 Edge 打開後再按這裡，下面的指令才會是正確路徑。</div>`}
+    <ol class="steps">
+      <li><div>在<b>桌面</b>空白處按右鍵 →「新增」→「捷徑」</div></li>
+      <li><div>在「輸入項目的位置」貼上這一段，按「下一步」
+        <div class="cmd"><code id="lnkCmd">${esc(cmd)}</code><button class="btn sm" type="button" id="lnkCopy">${ic('copy')}複製</button></div></div></li>
+      <li><div>名稱輸入「<b>常用剪貼簿</b>」，按「完成」</div></li>
+      <li><div>在新的捷徑上按右鍵 →「內容」→ 點一下「<b>快速鍵</b>」欄位，直接按下 <kbd>Ctrl</kbd> <kbd>Alt</kbd> <kbd>V</kbd>（或你喜歡的組合）→「確定」</div></li>
+    </ol>
+    ${tooLong?`<div class="tip warn">這個檔案的路徑太長（超過 Windows 捷徑的 260 字上限）。請把 clipboard.html 移到比較短的位置，例如「文件」資料夾，再重新打開這個說明。</div>`:''}
+    <div class="tip">
+      ・快速鍵只對放在<b>桌面</b>或<b>開始功能表</b>的捷徑有效。<br>
+      ・每按一次快速鍵會開一個新視窗，資料都是同一份。<br>
+      ・想要開機自動開啟：按 <kbd>Win</kbd>+<kbd>R</kbd> 輸入 <b>shell:startup</b>，把捷徑複製一份到開啟的資料夾。<br>
+      ・第 2 步如果出現「找不到」，把指令裡的 <b>Program Files (x86)</b> 改成 <b>Program Files</b> 再試一次。<br>
+      ・不要移動 clipboard.html，否則捷徑會失效（資料不會不見，重新建立捷徑即可）。
+    </div>
+    <div class="mf"><span class="sp"></span><button class="btn sm" type="button" data-close="1">完成</button></div>`,
+  {dirty:()=>false,save(){closeModal()}});
+  $('#lnkCopy').addEventListener('click',async()=>{
+    if(await writeClip(cmd)){const b=$('#lnkCopy');b.innerHTML=`${ic('check')}已複製`;setTimeout(()=>{if(b.isConnected)b.innerHTML=`${ic('copy')}複製`},1500)}
+  });
+}
+$('#lnkBtn').addEventListener('click',openShortcutHelp);
+
 /* ---------- 其他 ---------- */
-addEventListener('storage',e=>{if(e.key===KEY&&e.newValue&&!modal){try{const d=normalize(JSON.parse(e.newValue));if(d){db=d;seeded=false;render()}}catch(err){}}});
+addEventListener('storage',e=>{
+  if(e.key===KEY+'.bsig'){BK.sig=e.newValue||'';BK.last=+lsGet(KEY+'.blast')||BK.last;renderBk();return} // 其他視窗已備份
+  if(e.key===KEY&&e.newValue&&!modal){try{const d=normalize(JSON.parse(e.newValue));if(d){db=d;seeded=false;render();renderBk()}}catch(err){}}
+});
 addEventListener('resize',()=>movePill(true));
-setInterval(()=>{if(!modal&&!dragId&&document.visibilityState==='visible')$$('.item',grid).forEach(el=>{const it=itemById(el.dataset.id);if(it)$('.meta',el).innerHTML=metaHTML(it)})},60000);
+setInterval(()=>{renderBk();if(!modal&&!dragId&&document.visibilityState==='visible')$$('.item',grid).forEach(el=>{const it=itemById(el.dataset.id);if(it)$('.meta',el).innerHTML=metaHTML(it)})},60000);
 
 if(MOD==='⌘')$$('.keys kbd').forEach(k=>{if(k.textContent==='Ctrl')k.textContent='⌘'});
 try{localStorage.setItem(KEY+'.test','1');localStorage.removeItem(KEY+'.test')}catch(e){storageOK=false}
 load();render(true);
 if(!storageOK)save();
+initBackup();
 </script>
 </body>
 </html>
