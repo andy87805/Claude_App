@@ -82,6 +82,10 @@ aside{position:sticky;top:20px;display:flex;flex-direction:column;gap:16px}
 .cat:not(.on):hover{background:var(--soft)}
 .cat.on{color:var(--on-ink)}
 .cat.drop{box-shadow:inset 0 0 0 2px var(--accent);background:rgba(43,217,107,.12)}
+.cat[draggable="true"]{cursor:grab}
+.cat[draggable="true"]:active{cursor:grabbing}
+.cat.dragging{opacity:.35}
+.cats.sorting .cat:not(.dragging):hover{background:none}
 .cat .dot{width:10px;height:10px;border-radius:50%;background:var(--c);flex:none;margin:0 4px}
 .cat .ic{width:18px;height:18px}
 .cat .nm{flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
@@ -379,6 +383,7 @@ textarea.inp{height:150px;min-height:110px;max-height:46vh;padding:12px 14px;res
         <div>貼上即新增<span><kbd>Ctrl</kbd><kbd>V</kbd></span></div>
         <div>卡片間移動<span><kbd>↑</kbd><kbd>↓</kbd><kbd>←</kbd><kbd>→</kbd></span></div>
         <div>編輯／釘選／刪除<span><kbd>E</kbd><kbd>P</kbd><kbd>Del</kbd></span></div>
+        <div>分類排序（或直接拖曳）<span><kbd>Alt</kbd><kbd>↑</kbd><kbd>↓</kbd></span></div>
         <div>逐行模式／開啟連結<span><kbd>L</kbd><kbd>O</kbd></span></div>
         <div>進入逐行、逐行移動<span><kbd>Tab</kbd><kbd>↑</kbd><kbd>↓</kbd></span></div>
       </div>
@@ -628,7 +633,7 @@ function renderCats(){
     `<button class="cat" data-cat="all" type="button">${ic('i-all')}<span class="nm">全部</span><span class="n num">${db.items.length}</span></button>`,
     `<button class="cat" data-cat="pin" type="button">${ic('star')}<span class="nm">釘選</span><span class="n num">${cnt('pin')}</span></button>`,
     `<i class="sep"></i>`,
-    ...db.cats.map(c=>`<button class="cat" data-cat="${c.id}" type="button" style="--c:${c.color}"><i class="dot"></i><span class="nm">${esc(c.name)}</span><span class="n num">${cnt(c.id)}</span><span class="ed" data-edit="${c.id}" title="編輯分類">${ic('edit')}</span></button>`),
+    ...db.cats.map(c=>`<button class="cat" data-cat="${c.id}" type="button" draggable="true" title="拖曳可調整順序（或 Alt＋↑↓）" style="--c:${c.color}"><i class="dot"></i><span class="nm">${esc(c.name)}</span><span class="n num">${cnt(c.id)}</span><span class="ed" data-edit="${c.id}" title="編輯分類">${ic('edit')}</span></button>`),
   ];
   const none=cnt('none');
   if(none)rows.push(`<button class="cat" data-cat="none" type="button" style="--c:var(--mute)"><i class="dot"></i><span class="nm">未分類</span><span class="n num">${none}</span></button>`);
@@ -682,12 +687,13 @@ function render(anim){
   renderCats();renderSort();
 }
 // 位置變化時用 FLIP 做彈性移動
-function flip(fn){
-  const first=new Map($$('.item',grid).map(el=>[el.dataset.id,el.getBoundingClientRect()]));
+function flip(fn){flipIn(grid,'.item','id',fn)}
+function flipIn(box,sel,key,fn){
+  const first=new Map($$(sel,box).map(el=>[el.dataset[key],el.getBoundingClientRect()]));
   fn();
   if(reduce.matches)return;
-  $$('.item',grid).forEach(el=>{
-    const f=first.get(el.dataset.id);
+  $$(sel,box).forEach(el=>{
+    const f=first.get(el.dataset[key]);
     if(!f){el.classList.add('pop');return}
     const l=el.getBoundingClientRect(),dx=f.left-l.left,dy=f.top-l.top;
     if(Math.abs(dx)<1&&Math.abs(dy)<1)return;
@@ -983,7 +989,59 @@ grid.addEventListener('dragend',()=>{
   dragId=null;moved=false;
   $$('.cat.drop',catsEl).forEach(x=>x.classList.remove('drop'));
 });
+/* ---------- 分類拖曳排序 ---------- */
+let catDrag=null,catMoved=false,catSwap=0;
+const catRows=()=>$$('.cat[draggable="true"]',catsEl);
+catsEl.addEventListener('dragstart',e=>{
+  const row=e.target.closest('.cat[draggable="true"]');if(!row)return;
+  catDrag=row.dataset.cat;catMoved=false;
+  e.dataTransfer.effectAllowed='move';
+  e.dataTransfer.setData('application/x-clipbox-cat',catDrag);
+  e.dataTransfer.setData('text/plain',catById(catDrag)?.name||'');
+  requestAnimationFrame(()=>{row.classList.add('dragging');catsEl.classList.add('sorting')});
+});
+function catDragOver(e){
+  if(!catDrag)return false;
+  e.preventDefault();e.dataTransfer.dropEffect='move';
+  const over=e.target.closest('.cat[draggable="true"]'),me=catsEl.querySelector(`.cat[data-cat="${catDrag}"]`);
+  if(!over||!me||over===me||performance.now()-catSwap<150)return true;
+  const rows=catRows(),a=rows.indexOf(me),b=rows.indexOf(over);
+  catSwap=performance.now();catMoved=true;
+  flipIn(catsEl,'.cat','cat',()=>over[a<b?'after':'before'](me));
+  movePill();
+  return true;
+}
+function commitCatOrder(){
+  const ids=catRows().map(r=>r.dataset.cat);
+  const before=db.cats.map(c=>c.id).join();
+  db.cats=ids.map(catById).filter(Boolean).concat(db.cats.filter(c=>!ids.includes(c.id)));
+  if(db.cats.map(c=>c.id).join()===before)return false;
+  save();return true;
+}
+catsEl.addEventListener('dragend',()=>{
+  if(!catDrag)return;
+  catsEl.classList.remove('sorting');
+  const changed=catMoved&&commitCatOrder();
+  catDrag=null;catMoved=false;
+  renderCats();
+  if(changed)toast('已調整分類順序','check',{key:'catsort',ms:1400});
+});
+// 鍵盤：Alt＋↑↓（手機橫排時 Alt＋←→）
+catsEl.addEventListener('keydown',e=>{
+  const row=e.target.closest('.cat[draggable="true"]');
+  if(!row||!e.altKey||e.ctrlKey||e.metaKey)return;
+  const d={ArrowUp:-1,ArrowLeft:-1,ArrowDown:1,ArrowRight:1}[e.key];if(!d)return;
+  e.preventDefault();e.stopPropagation();
+  const i=db.cats.findIndex(c=>c.id===row.dataset.cat),j=i+d;
+  if(i<0||j<0||j>=db.cats.length)return;
+  [db.cats[i],db.cats[j]]=[db.cats[j],db.cats[i]];
+  save();
+  flipIn(catsEl,'.cat','cat',()=>renderCats());
+  catsEl.querySelector(`.cat[data-cat="${row.dataset.cat}"]`)?.focus();
+  toast('已調整分類順序','check',{key:'catsort',ms:1200});
+});
 catsEl.addEventListener('dragover',e=>{
+  if(catDragOver(e))return;
   const row=e.target.closest('.cat');
   if(!dragId||!row||row.dataset.cat==='all'||!row.dataset.cat)return;
   e.preventDefault();e.dataTransfer.dropEffect='move';
@@ -991,6 +1049,7 @@ catsEl.addEventListener('dragover',e=>{
 });
 catsEl.addEventListener('dragleave',e=>{const row=e.target.closest('.cat');if(row&&!row.contains(e.relatedTarget))row.classList.remove('drop')});
 catsEl.addEventListener('drop',e=>{
+  if(catDrag){e.preventDefault();return}
   const row=e.target.closest('.cat');if(!dragId||!row)return;
   e.preventDefault();row.classList.remove('drop');
   const it=itemById(dragId),k=row.dataset.cat;if(!it)return;
