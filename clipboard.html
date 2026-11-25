@@ -4,6 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>常用剪貼簿</title>
+<link rel="icon" type="image/svg+xml" sizes="any" href='data:image/svg+xml,%3Csvg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512"%3E%3Crect width="512" height="512" rx="112" fill="%230c0c0d"/%3E%3Crect x="104" y="104" width="304" height="360" rx="56" fill="%23fff"/%3E%3Crect x="168" y="56" width="176" height="104" rx="40" fill="%232bd96b" stroke="%230c0c0d" stroke-width="24" paint-order="stroke"/%3E%3Crect x="164" y="236" width="184" height="48" rx="24" fill="%230c0c0d"/%3E%3Crect x="164" y="328" width="120" height="48" rx="24" fill="%232bd96b"/%3E%3C/svg%3E'>
 <style>
 :root{
   --bg:#ebebed; --card:#fff; --ink:#0c0c0d; --on-ink:#fff; --accent:#2bd96b;
@@ -45,7 +46,7 @@ kbd{font:600 11px/1 inherit;font-family:inherit;color:var(--mute);background:var
 header{display:flex;align-items:center;gap:12px;padding:6px 6px 22px;flex-wrap:wrap}
 header .ttl{flex:1;min-width:180px}
 h1{font-size:22px;font-weight:700;letter-spacing:-.01em;display:flex;align-items:center;gap:10px}
-h1 i{width:10px;height:10px;border-radius:50%;background:var(--accent);box-shadow:0 0 0 4px rgba(43,217,107,.18)}
+h1 .logo{width:30px;height:30px;border-radius:9px;flex:none;box-shadow:0 0 0 1px var(--line),0 4px 12px rgba(0,0,0,.12)}
 header p{color:var(--mute);font-size:13px;margin-top:2px}
 .srch{display:flex;align-items:center;gap:8px;height:44px;width:min(380px,100%);border-radius:14px;background:var(--card);padding:0 8px 0 12px;border:1.5px solid transparent;transition:border-color .3s,box-shadow .3s}
 .srch:focus-within{border-color:var(--ink)}
@@ -346,7 +347,7 @@ textarea.inp{height:150px;min-height:110px;max-height:46vh;padding:12px 14px;res
 
 <div class="page">
 <header>
-  <div class="ttl"><h1><i></i>常用剪貼簿</h1><p id="sub">點一下卡片就能複製</p></div>
+  <div class="ttl"><h1><img class="logo" alt="" src='data:image/svg+xml,%3Csvg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512"%3E%3Crect width="512" height="512" rx="112" fill="%230c0c0d"/%3E%3Crect x="104" y="104" width="304" height="360" rx="56" fill="%23fff"/%3E%3Crect x="168" y="56" width="176" height="104" rx="40" fill="%232bd96b" stroke="%230c0c0d" stroke-width="24" paint-order="stroke"/%3E%3Crect x="164" y="236" width="184" height="48" rx="24" fill="%230c0c0d"/%3E%3Crect x="164" y="328" width="120" height="48" rx="24" fill="%232bd96b"/%3E%3C/svg%3E'>常用剪貼簿</h1><p id="sub">點一下卡片就能複製</p></div>
   <label class="srch" id="srch"><svg class="ic"><use href="#search"/></svg><input id="q" type="search" placeholder="搜尋標題、內容或分類" autocomplete="off" spellcheck="false"><button class="clr" id="qclr" type="button" title="清除搜尋"><svg class="ic"><use href="#x"/></svg></button><kbd>/</kbd></label>
   <button class="btn" id="addBtn" type="button"><svg class="ic"><use href="#plus"/></svg>新增</button>
 </header>
@@ -1218,12 +1219,42 @@ async function initBackup(){
   if(bkPending()&&BK.perm==='granted')runBackup(); // 上次有修改沒備份到，這次補上（只寫不讀）
 }
 
+/* ---------- 圖示：小尺寸用簡化版，大尺寸用有疊卡的版本 ---------- */
+const ICON_BIG='<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512"><defs><linearGradient id="g" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#2a2a2f"/><stop offset="1" stop-color="#0c0c0d"/></linearGradient></defs><rect width="512" height="512" rx="120" fill="url(#g)"/><rect x="176" y="96" width="236" height="304" rx="46" fill="#45454c" transform="rotate(9 294 248)"/><rect x="112" y="118" width="252" height="322" rx="48" fill="#fff"/><rect x="172" y="80" width="132" height="78" rx="30" fill="#2bd96b" stroke="#1b1b1f" stroke-width="18" paint-order="stroke"/><rect x="160" y="222" width="156" height="32" rx="16" fill="#0c0c0d"/><rect x="160" y="284" width="156" height="32" rx="16" fill="#0c0c0d"/><rect x="160" y="346" width="96" height="32" rx="16" fill="#2bd96b"/></svg>';
+async function makeIco(){
+  const load=u=>new Promise((res,rej)=>{const im=new Image();im.onload=()=>res(im);im.onerror=()=>rej(new Error('圖示載入失敗'));im.src=u});
+  const [sm,bg]=await Promise.all([load($('link[rel="icon"]').href),load('data:image/svg+xml,'+encodeURIComponent(ICON_BIG))]);
+  const sizes=[16,24,32,48,64,256];
+  const bufs=await Promise.all(sizes.map(z=>{
+    const c=document.createElement('canvas');c.width=c.height=z;
+    const x=c.getContext('2d');x.imageSmoothingQuality='high';x.drawImage(z<=32?sm:bg,0,0,z,z);
+    return new Promise((res,rej)=>c.toBlob(b=>b?res(b.arrayBuffer()):rej(new Error('無法產生圖示')),'image/png'));
+  }));
+  const n=sizes.length,head=new DataView(new ArrayBuffer(6+16*n));
+  head.setUint16(2,1,true);head.setUint16(4,n,true);
+  let off=6+16*n;
+  sizes.forEach((z,i)=>{const o=6+16*i;head.setUint8(o,z%256);head.setUint8(o+1,z%256);head.setUint16(o+4,1,true);head.setUint16(o+6,32,true);head.setUint32(o+8,bufs[i].byteLength,true);head.setUint32(o+12,off,true);off+=bufs[i].byteLength});
+  return new Blob([head.buffer,...bufs],{type:'image/x-icon'});
+}
+async function downloadIco(){
+  try{
+    const url=URL.createObjectURL(await makeIco());
+    const a=document.createElement('a');a.href=url;a.download='ClipBoard.ico';document.body.append(a);a.click();a.remove();
+    setTimeout(()=>URL.revokeObjectURL(url),2000);
+    toast('已下載 ClipBoard.ico','down',{sub:'請把它移到和 ClipBoard.html 同一個資料夾，再到捷徑裡選它'});
+  }catch(e){toast('無法產生圖示檔','x',{bad:true,sub:e.message})}
+}
+
 /* ---------- 快捷鍵開啟：Edge 應用程式模式捷徑 ---------- */
 function openShortcutHelp(){
   const url=decodeURI(location.href.split('#')[0].split('?')[0]);
   const local=location.protocol==='file:';
   const cmd=`"C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe" --app="${url}"`;
   const tooLong=cmd.length>259;
+  // 圖示檔建議放的位置：和這個 HTML 同一個資料夾
+  let dir=decodeURIComponent(location.pathname).replace(/[^/]*$/,'');
+  if(/^\/[a-zA-Z]:\//.test(dir))dir=dir.slice(1).replace(/\//g,'\\');
+  const icoPath=dir+'ClipBoard.ico';
   openModal(`<h3>用快捷鍵開啟<button class="x" type="button" data-close="1" title="關閉 (Esc)">${ic('x')}</button></h3>
     <p class="hint" style="margin:-8px 0 16px">建立一個桌面捷徑，用 Edge 的「應用程式模式」開啟：沒有網址列和分頁，像獨立程式一樣，還能設定快速鍵。不需要安裝任何東西或管理員權限。</p>
     ${local?'':`<div class="tip warn" style="margin:0 0 14px">目前不是從電腦裡的檔案開啟。請先把 clipboard.html 存到電腦（例如「文件」資料夾），用 Edge 打開後再按這裡，下面的指令才會是正確路徑。</div>`}
@@ -1233,6 +1264,9 @@ function openShortcutHelp(){
         <div class="cmd"><code id="lnkCmd">${esc(cmd)}</code><button class="btn sm" type="button" id="lnkCopy">${ic('copy')}複製</button></div></div></li>
       <li><div>名稱輸入「<b>常用剪貼簿</b>」，按「完成」</div></li>
       <li><div>在新的捷徑上按右鍵 →「內容」→ 點一下「<b>快速鍵</b>」欄位，直接按下 <kbd>Ctrl</kbd> <kbd>Alt</kbd> <kbd>V</kbd>（或你喜歡的組合）→「確定」</div></li>
+      <li><div>換上圖示（可省略）：同一個「內容」視窗按「<b>變更圖示</b>」→「瀏覽」→ 選 <b>ClipBoard.ico</b> →「確定」
+        <div class="cmd"><code>${esc(icoPath)}</code><button class="btn ghost sm" type="button" id="icoDl">${ic('down')}下載圖示檔</button></div>
+        <p class="hint" style="margin-top:6px">資料夾裡沒有 ClipBoard.ico 的話，按「下載圖示檔」，再把它移到上面這個資料夾。</p></div></li>
     </ol>
     ${tooLong?`<div class="tip warn">這個檔案的路徑太長（超過 Windows 捷徑的 260 字上限）。請把 clipboard.html 移到比較短的位置，例如「文件」資料夾，再重新打開這個說明。</div>`:''}
     <div class="tip">
@@ -1244,6 +1278,7 @@ function openShortcutHelp(){
     </div>
     <div class="mf"><span class="sp"></span><button class="btn sm" type="button" data-close="1">完成</button></div>`,
   {dirty:()=>false,save(){closeModal()}});
+  $('#icoDl').addEventListener('click',downloadIco);
   $('#lnkCopy').addEventListener('click',async()=>{
     if(await writeClip(cmd)){const b=$('#lnkCopy');b.innerHTML=`${ic('check')}已複製`;setTimeout(()=>{if(b.isConnected)b.innerHTML=`${ic('copy')}複製`},1500)}
   });
