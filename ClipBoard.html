@@ -1257,7 +1257,7 @@ function openShortcutHelp(){
   const icoPath=dir+'ClipBoard.ico';
   openModal(`<h3>用快捷鍵開啟<button class="x" type="button" data-close="1" title="關閉 (Esc)">${ic('x')}</button></h3>
     <p class="hint" style="margin:-8px 0 16px">建立一個桌面捷徑，用 Edge 的「應用程式模式」開啟：沒有網址列和分頁，像獨立程式一樣，還能設定快速鍵。不需要安裝任何東西或管理員權限。</p>
-    ${local?'':`<div class="tip warn" style="margin:0 0 14px">目前不是從電腦裡的檔案開啟。請先把 clipboard.html 存到電腦（例如「文件」資料夾），用 Edge 打開後再按這裡，下面的指令才會是正確路徑。</div>`}
+    ${local?'':`<div class="tip warn" style="margin:0 0 14px">目前不是從電腦裡的檔案開啟。請先把 ClipBoard.html 存到電腦（例如「文件」資料夾），用 Edge 打開後再按這裡，下面的指令才會是正確路徑。</div>`}
     <ol class="steps">
       <li><div>在<b>桌面</b>空白處按右鍵 →「新增」→「捷徑」</div></li>
       <li><div>在「輸入項目的位置」貼上這一段，按「下一步」
@@ -1268,13 +1268,13 @@ function openShortcutHelp(){
         <div class="cmd"><code>${esc(icoPath)}</code><button class="btn ghost sm" type="button" id="icoDl">${ic('down')}下載圖示檔</button></div>
         <p class="hint" style="margin-top:6px">資料夾裡沒有 ClipBoard.ico 的話，按「下載圖示檔」，再把它移到上面這個資料夾。</p></div></li>
     </ol>
-    ${tooLong?`<div class="tip warn">這個檔案的路徑太長（超過 Windows 捷徑的 260 字上限）。請把 clipboard.html 移到比較短的位置，例如「文件」資料夾，再重新打開這個說明。</div>`:''}
+    ${tooLong?`<div class="tip warn">這個檔案的路徑太長（超過 Windows 捷徑的 260 字上限）。請把 ClipBoard.html 移到比較短的位置，例如「文件」資料夾，再重新打開這個說明。</div>`:''}
     <div class="tip">
       ・快速鍵只對放在<b>桌面</b>或<b>開始功能表</b>的捷徑有效。<br>
       ・每按一次快速鍵會開一個新視窗，資料都是同一份。<br>
       ・想要開機自動開啟：按 <kbd>Win</kbd>+<kbd>R</kbd> 輸入 <b>shell:startup</b>，把捷徑複製一份到開啟的資料夾。<br>
       ・第 2 步如果出現「找不到」，把指令裡的 <b>Program Files (x86)</b> 改成 <b>Program Files</b> 再試一次。<br>
-      ・不要移動 clipboard.html，否則捷徑會失效（資料不會不見，重新建立捷徑即可）。
+      ・不要移動 ClipBoard.html，否則捷徑會失效（資料不會不見，重新建立捷徑即可）。
     </div>
     <div class="mf"><span class="sp"></span><button class="btn sm" type="button" data-close="1">完成</button></div>`,
   {dirty:()=>false,save(){closeModal()}});
