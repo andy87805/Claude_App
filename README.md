@@ -1,15 +1,30 @@
-# 資料夾權限查詢工具（AD 環境用 PowerShell）
+# AD 權限查詢工具（PowerShell）
 
-輸入一個資料夾或共用路徑，查出**哪些人員、群組有權限**，再選一個群組，列出**群組內的人員與資訊**（姓名、帳號、部門、職稱、Email、帳號狀態…）。
+啟動後從主選單選擇要查什麼：輸入資料夾或共用路徑查出**哪些人員、群組有權限**、直接查**群組成員**、查**使用者 / 電腦資訊與所屬群組**、**比較兩位使用者的群組**等。
 
 > 🛡 **全程唯讀，不會修改 AD 或權限**
-> - 只用 `Get-Acl`、`Get-ChildItem`、`Get-ADObject`、`Get-ADUser`、`Get-ADGroup`、`Get-ADGroupMember` 這類查詢指令。
+> - 只用 `Get-Acl`、`Get-ChildItem`、`Get-ADObject`、`Get-ADUser`、`Get-ADGroup`、`Get-ADGroupMember`、`Get-ADComputer` 這類查詢指令。
 > - 程式裡沒有任何 `Set-*`、`Add-AD*`、`Remove-*`、`Set-Acl` 等異動指令；`tests\ReadOnly.Tests.ps1` 會自動掃描程式碼確認這一點。
 > - 只會在**你自己的電腦上**寫兩種檔案：查詢紀錄 log，以及你主動匯出的 CSV / HTML 報表。
 
 ---
 
-## 功能
+## 主選單
+
+| 選項 | 說明 |
+| --- | --- |
+| [1] 查詢路徑權限 | 誰有這個資料夾的權限；可再選群組看成員、反查使用者、掃描子資料夾 |
+| [2] 查群組成員 | 輸入群組名稱（可只打一部分，找到多個時從清單挑），列出成員 |
+| [3] 查使用者資訊與所屬群組 | 輸入帳號或姓名，顯示個人資料（部門、職稱、主管、帳號狀態、密碼、最後登入、所在 OU…）與所屬的所有群組，並標示是「直接」加入還是「透過」哪個群組 |
+| [4] 比較兩位使用者的群組 | 列出只有 A 有、只有 B 有、兩人都有的群組（含巢狀），常用於「新人權限比照某位同事」 |
+| [5] 搜尋帳號 | 用帳號、姓名、部門、職稱、Email、員工編號找人，可再點進去看詳細資料 |
+| [6] 反查使用者在某個路徑的權限 | 直接輸入帳號＋路徑，不用先查路徑 |
+| [7] 查電腦帳號 | 作業系統、IP、狀態（停用 / 久未登入）、最後登入、所在 OU、所屬群組 |
+| [8] 查群組被用在哪些資料夾 | 從指定資料夾往下掃描，找出有給這個群組權限的資料夾（預設只列明確設定的，可選擇連繼承的一起列） |
+
+輸入名稱時都可以只打一部分，例如輸入 `財務` 會列出名稱含「財務」的群組或部門是財務部的人。
+
+## 功能細節
 
 | 功能 | 說明 |
 | --- | --- |
@@ -19,7 +34,7 @@
 | 帳號狀態 | 標示 **停用、鎖定、密碼已過期、超過 N 天未登入、從未登入**，可一鍵只看異常帳號 |
 | 反查使用者 | 輸入帳號，列出他在這個路徑透過哪個群組取得什麼權限；有「拒絕」權限也會提醒 |
 | 子資料夾掃描 | 往下掃描 N 層，只列出**中斷繼承**或**有額外明確權限**的子資料夾 |
-| 關鍵字篩選 | 成員清單可用姓名、帳號、部門等關鍵字篩選，多個關鍵字用空白分隔 |
+| 關鍵字篩選 | 所有清單（成員、群組、搜尋結果、比較結果…）都可用關鍵字篩選，多個關鍵字用空白分隔 |
 | 匯出報表 | CSV（含 BOM，Excel 直接開不會亂碼）與 HTML 報表 |
 | 查詢紀錄 | 每次查詢記錄時間、操作者、電腦、動作、目標到本機 log |
 | 異常提醒 | 孤立 SID（帳戶已刪除但權限還在）、拒絕權限 |
@@ -49,10 +64,25 @@
    .\Start-ADPermissionQuery.ps1
    ```
 
-3. 依照畫面操作：
+3. 依照畫面操作，先從主選單選擇要查什麼：
 
    ```
-   請輸入資料夾路徑（例如 \\fileserver\share\財務部），輸入 Q 離開: \\fs01\share\Finance
+   ================ 主選單 ================
+     [1] 查詢路徑權限（誰有這個資料夾的權限）
+     [2] 查群組成員
+     [3] 查使用者資訊與所屬群組
+     [4] 比較兩位使用者的群組
+     [5] 搜尋帳號（姓名、部門、職稱、Email…）
+     [6] 反查使用者在某個路徑的權限
+     [7] 查電腦帳號
+     [8] 查群組被用在哪些資料夾
+     [Q] 離開
+   ```
+
+   例如選 [1] 查詢路徑權限：
+
+   ```
+   請輸入資料夾路徑（例如 \\fileserver\share\財務部），直接按 Enter 返回: \\fs01\share\Finance
 
    擁有者：CORP\FileAdmin　繼承：有繼承上層
    === 權限清單：\\fs01\share\Finance ===
@@ -61,20 +91,20 @@
    4  CORP\Finance-RW             群組     修改        允許       此資料夾、子資料夾及檔案   否
    ...
 
-   [1] 選擇群組查看成員  [2] 反查使用者權限  [3] 掃描子資料夾  [4] 匯出權限清單  [5] 重新顯示  [N] 查詢其他路徑  [Q] 離開
+   [1] 選擇群組查看成員  [2] 反查使用者權限  [3] 掃描子資料夾  [4] 匯出權限清單  [5] 重新顯示  [N] 查詢其他路徑  [B] 回主選單  [Q] 離開
    ```
 
    進入群組成員後：
 
    ```
-   [F] 關鍵字篩選  [A] 只看狀態異常帳號  [C] 清除篩選  [E] 匯出目前清單  [S] 重新顯示  [B] 返回
+   [A] 只看狀態異常帳號  [V] 查看某位成員的詳細資料  [F] 關鍵字篩選  [C] 清除篩選  [E] 匯出目前清單  [S] 重新顯示  [B] 返回
    ```
 
 ### 參數
 
 | 參數 | 說明 |
 | --- | --- |
-| `-Path` | 直接指定要查詢的路徑 |
+| `-Path` | 啟動後直接查詢這個路徑的權限（查完回到主選單） |
 | `-Server` | 指定網域控制站或網域，例如 `dc01.corp.local`（查其他網域時用） |
 | `-InactiveDays` | 超過幾天未登入算「久未登入」，預設 90 |
 | `-LogPath` | 查詢紀錄位置，預設 `%LOCALAPPDATA%\ADPermissionQuery\query.log` |
@@ -95,6 +125,11 @@ $r.Permissions | Format-Table Identity, Category, Rights, AccessType
 Get-GroupMemberDetail -Identity 'Finance-RW' -Recurse | Export-Csv members.csv -NoTypeInformation -Encoding UTF8
 Find-UserPathAccess -Path '\\fs01\share\Finance' -User 'jdoe'
 Get-SubfolderPermissionDiff -Path '\\fs01\share\Finance' -Depth 3
+Find-ADGroupByName -Name 'Finance'
+(Get-ADUserInfo -Identity 'jdoe').Groups | Format-Table Name, Via
+Compare-ADUserGroup -UserA 'jdoe' -UserB 'alice' | ForEach-Object Rows | Where-Object Result -ne '兩者都有'
+Get-ADComputerInfo -Identity 'PC01'
+Find-GroupFolderUsage -Group 'Finance-RW' -Path '\\fs01\share' -Depth 3
 ```
 
 報表預設存到「文件\ADPermissionReports」。
@@ -109,6 +144,8 @@ Get-SubfolderPermissionDiff -Path '\\fs01\share\Finance' -Depth 3
 - 若群組超過 5,000 名成員，`Get-ADGroupMember` 可能失敗，工具會自動改用 member 屬性讀取（這種方式不含「主要群組」為該群組的成員，畫面會有提示）。
 - 「最後登入」使用 `LastLogonDate`（lastLogonTimestamp），在網域控制站間同步會有最多約 14 天誤差。
 - 成員很多的群組逐一讀取使用者資料會花一點時間。
+- 「查群組被用在哪些資料夾」只比對這個群組本身；如果它被加進其他群組，透過上層群組取得的權限不會列出。資料夾很多時掃描會比較久，建議從較小的範圍開始。
+- 搜尋最多列出 200 筆，結果太多時請輸入更完整的名稱或關鍵字。
 
 ---
 

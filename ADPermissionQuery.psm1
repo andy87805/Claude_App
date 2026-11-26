@@ -378,15 +378,17 @@ function Get-UserStatusText {
     return ($flags -join '、')
 }
 
+$script:UserProperties = @('DisplayName', 'Department', 'Title', 'mail', 'telephoneNumber', 'mobile', 'Office', 'Company', 'Description',
+    'EmployeeID', 'UserPrincipalName', 'Manager', 'Enabled', 'LockedOut', 'PasswordExpired', 'PasswordNeverExpires', 'PasswordLastSet',
+    'LastLogonDate', 'AccountExpirationDate', 'whenCreated', 'MemberOf', 'PrimaryGroup')
+
 function Get-ADUserDetail {
     <# 取得使用者詳細資料（Get-ADUser，唯讀） #>
     [CmdletBinding()]
     param([Parameter(Mandatory)][string]$Identity)
     if ($script:UserCache.ContainsKey($Identity)) { return $script:UserCache[$Identity] }
-    $props = @('DisplayName', 'Department', 'Title', 'mail', 'telephoneNumber', 'Office', 'Company', 'Description',
-        'Enabled', 'LockedOut', 'PasswordExpired', 'PasswordNeverExpires', 'PasswordLastSet', 'LastLogonDate', 'whenCreated')
     $srv = Get-ADServerParam
-    $u = Get-ADUser -Identity $Identity -Properties $props @srv -ErrorAction Stop
+    $u = Get-ADUser -Identity $Identity -Properties $script:UserProperties @srv -ErrorAction Stop
     $script:UserCache[$Identity] = $u
     return $u
 }
@@ -403,7 +405,6 @@ function Get-GroupMemberDetail {
     )
     $srv = Get-ADServerParam
     $root = Get-ADGroup -Identity $Identity @srv -ErrorAction Stop
-    $inactiveDays = $script:Config.InactiveDays
 
     $results = New-Object System.Collections.Generic.List[object]
     $userIndex = @{}                                   # DN -> 結果列（同一人經多條途徑時合併）
@@ -466,23 +467,7 @@ function Get-GroupMemberDetail {
                 $u = $null
                 try { $u = Get-ADUserDetail -Identity $dn } catch { Write-Warning "讀取使用者 $dn 失敗：$($_.Exception.Message)" }
                 if ($u) {
-                    $row = [pscustomobject]@{
-                        Name                 = if ($u.DisplayName) { [string]$u.DisplayName } else { [string]$u.Name }
-                        SamAccountName       = [string]$u.SamAccountName
-                        ObjectClass          = '使用者'
-                        Department           = [string]$u.Department
-                        Title                = [string]$u.Title
-                        Email                = [string]$u.mail
-                        Phone                = [string]$u.telephoneNumber
-                        Office               = [string]$u.Office
-                        Enabled              = $u.Enabled
-                        Status               = Get-UserStatusText -User $u -InactiveDays $inactiveDays
-                        LastLogonDate        = $u.LastLogonDate
-                        PasswordLastSet      = $u.PasswordLastSet
-                        PasswordNeverExpires = $u.PasswordNeverExpires
-                        Via                  = $via
-                        DistinguishedName    = $dn
-                    }
+                    $row = ConvertTo-UserRow -User $u -Via $via
                 }
                 else {
                     $row = [pscustomobject]@{
@@ -534,9 +519,7 @@ function Find-UserPathAccess {
     )
     if (-not $PermissionResult) { $PermissionResult = Get-PathPermission -Path $Path }
 
-    $sam = $User
-    if ($sam.Contains('\')) { $sam = $sam.Substring($sam.IndexOf('\') + 1) }
-    if ($sam.Contains('@')) { $sam = $sam.Substring(0, $sam.IndexOf('@')) }
+    $sam = Get-SamFromInput $User
 
     $srv = Get-ADServerParam
     $u = Get-ADUser -Identity $sam -Properties tokenGroups, DisplayName @srv -ErrorAction Stop
@@ -568,6 +551,342 @@ function Find-UserPathAccess {
     }
     Write-QueryLog -Action '反查使用者權限' -Target "$sam @ $Path"
     return @($matched)
+}
+
+# ---------------------------------------------------------------------------
+# 搜尋 AD 物件、使用者 / 電腦資訊、所屬群組、比較、群組用在哪些資料夾（全部唯讀）
+# ---------------------------------------------------------------------------
+$script:MaxSearchResults = 200
+$script:ComputerProperties = @('DNSHostName', 'OperatingSystem', 'OperatingSystemVersion', 'IPv4Address', 'LastLogonDate',
+    'Enabled', 'Description', 'whenCreated', 'PasswordLastSet', 'ManagedBy', 'Location', 'MemberOf', 'PrimaryGroup')
+
+function Get-SamFromInput {
+    <# 把使用者輸入的 CORP\jdoe、jdoe@corp.local 轉成 jdoe；DN 原樣保留 #>
+    param([string]$Text)
+    $t = "$Text".Trim().Trim('"')
+    if ($t -match '^(CN|OU)=') { return $t }
+    if ($t.Contains('\')) { $t = $t.Substring($t.IndexOf('\') + 1) }
+    if ($t.Contains('@')) { $t = $t.Substring(0, $t.IndexOf('@')) }
+    return $t
+}
+
+function Get-NameFromDN {
+    param([string]$DistinguishedName)
+    if ($DistinguishedName -match '^(?:CN|OU)=((?:\\,|[^,])+)') { return ($Matches[1] -replace '\\,', ',') }
+    return [string]$DistinguishedName
+}
+
+function Get-OUFromDN {
+    param([string]$DistinguishedName)
+    if (-not $DistinguishedName) { return '' }
+    return ($DistinguishedName -replace '^(?:CN|OU)=(?:\\,|[^,])+,', '')
+}
+
+function Format-InfoValue {
+    param($Value)
+    if ($null -eq $Value) { return '' }
+    if ($Value -is [bool]) { if ($Value) { return '是' } else { return '否' } }
+    if ($Value -is [datetime]) { return $Value.ToString('yyyy-MM-dd HH:mm') }
+    return [string]$Value
+}
+
+function ConvertTo-GroupRow {
+    param($Group, [string]$Via = '')
+    $cat = switch ([string]$Group.GroupCategory) { 'Security' { '安全性' } 'Distribution' { '發佈' } default { [string]$Group.GroupCategory } }
+    $scope = switch ([string]$Group.GroupScope) { 'Global' { '全域' } 'DomainLocal' { '網域本機' } 'Universal' { '萬用' } default { [string]$Group.GroupScope } }
+    [pscustomobject]@{
+        Name              = [string]$Group.Name
+        SamAccountName    = [string]$Group.SamAccountName
+        Category          = $cat
+        Scope             = $scope
+        Via               = $Via
+        Description       = [string]$Group.Description
+        DistinguishedName = [string]$Group.DistinguishedName
+    }
+}
+
+function ConvertTo-UserRow {
+    param($User, [string]$Via = '')
+    [pscustomobject]@{
+        Name                 = if ($User.DisplayName) { [string]$User.DisplayName } else { [string]$User.Name }
+        SamAccountName       = [string]$User.SamAccountName
+        ObjectClass          = '使用者'
+        Department           = [string]$User.Department
+        Title                = [string]$User.Title
+        Email                = [string]$User.mail
+        Phone                = [string]$User.telephoneNumber
+        Office               = [string]$User.Office
+        Enabled              = $User.Enabled
+        Status               = Get-UserStatusText -User $User -InactiveDays $script:Config.InactiveDays
+        LastLogonDate        = $User.LastLogonDate
+        PasswordLastSet      = $User.PasswordLastSet
+        PasswordNeverExpires = $User.PasswordNeverExpires
+        Via                  = $Via
+        DistinguishedName    = [string]$User.DistinguishedName
+    }
+}
+
+function Get-ComputerStatusText {
+    param($Computer)
+    if ($Computer.Enabled -eq $false) { return '停用' }
+    if (-not $Computer.LastLogonDate) { return '從未登入' }
+    $days = ((Get-Date) - [datetime]$Computer.LastLogonDate).Days
+    if ($days -gt $script:Config.InactiveDays) { return "超過 $($script:Config.InactiveDays) 天未登入" }
+    return '正常'
+}
+
+function ConvertTo-ComputerRow {
+    param($Computer)
+    [pscustomobject]@{
+        Name              = [string]$Computer.Name
+        OperatingSystem   = [string]$Computer.OperatingSystem
+        Status            = Get-ComputerStatusText -Computer $Computer
+        LastLogonDate     = $Computer.LastLogonDate
+        IPv4Address       = [string]$Computer.IPv4Address
+        Description       = [string]$Computer.Description
+        OU                = Get-OUFromDN ([string]$Computer.DistinguishedName)
+        DistinguishedName = [string]$Computer.DistinguishedName
+    }
+}
+
+function Find-ADGroupByName {
+    <# 用名稱（可只輸入一部分）搜尋群組（唯讀） #>
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][string]$Name)
+    $n = ConvertTo-LdapFilterValue (Get-SamFromInput $Name)
+    $srv = Get-ADServerParam
+    $found = @(Get-ADGroup -Filter "Name -like '*$n*' -or SamAccountName -like '*$n*'" -Properties Description, GroupCategory, GroupScope -ResultSetSize $script:MaxSearchResults @srv -ErrorAction Stop)
+    Write-QueryLog -Action '搜尋群組' -Target $Name
+    @($found | ForEach-Object { ConvertTo-GroupRow -Group $_ } | Sort-Object Name)
+}
+
+function Find-ADUserByKeyword {
+    <# 用帳號、姓名、Email、部門、職稱、員工編號搜尋使用者（唯讀） #>
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][string]$Keyword)
+    $k = ConvertTo-LdapFilterValue (Get-SamFromInput $Keyword)
+    $filter = "SamAccountName -like '*$k*' -or Name -like '*$k*' -or DisplayName -like '*$k*' -or mail -like '*$k*' -or Department -like '*$k*' -or Title -like '*$k*' -or EmployeeID -eq '$k'"
+    $srv = Get-ADServerParam
+    $found = @(Get-ADUser -Filter $filter -Properties $script:UserProperties -ResultSetSize $script:MaxSearchResults @srv -ErrorAction Stop)
+    Write-QueryLog -Action '搜尋帳號' -Target $Keyword
+    @($found | ForEach-Object { ConvertTo-UserRow -User $_ } | Sort-Object SamAccountName)
+}
+
+function Find-ADComputerByName {
+    <# 用電腦名稱、DNS 名稱、描述搜尋電腦帳號（唯讀） #>
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][string]$Name)
+    $n = ConvertTo-LdapFilterValue ("$Name".Trim().TrimEnd('$'))
+    $srv = Get-ADServerParam
+    $found = @(Get-ADComputer -Filter "Name -like '*$n*' -or DNSHostName -like '*$n*' -or Description -like '*$n*'" -Properties $script:ComputerProperties -ResultSetSize $script:MaxSearchResults @srv -ErrorAction Stop)
+    Write-QueryLog -Action '搜尋電腦' -Target $Name
+    @($found | ForEach-Object { ConvertTo-ComputerRow -Computer $_ } | Sort-Object Name)
+}
+
+function Get-PrincipalGroupDetail {
+    <#
+    .SYNOPSIS
+        列出使用者 / 電腦所屬的所有群組（含巢狀與主要群組），並標示取得方式（唯讀）。
+        傳入的物件需含 MemberOf 與 PrimaryGroup 屬性。
+    #>
+    [CmdletBinding()]
+    param([Parameter(Mandatory)]$Principal)
+    $srv = Get-ADServerParam
+    $rows = New-Object System.Collections.Generic.List[object]
+    $visited = New-Object System.Collections.Generic.HashSet[string]([System.StringComparer]::OrdinalIgnoreCase)
+    $queue = New-Object System.Collections.Generic.Queue[object]
+    foreach ($dn in @($Principal.MemberOf)) {
+        if ($dn -and $visited.Add([string]$dn)) { $queue.Enqueue(@{ Dn = [string]$dn; Chain = @(); Primary = $false }) }
+    }
+    if ($Principal.PrimaryGroup -and $visited.Add([string]$Principal.PrimaryGroup)) {
+        $queue.Enqueue(@{ Dn = [string]$Principal.PrimaryGroup; Chain = @(); Primary = $true })
+    }
+    while ($queue.Count -gt 0) {
+        $item = $queue.Dequeue()
+        try {
+            $g = Get-ADGroup -Identity $item.Dn -Properties MemberOf, Description, GroupCategory, GroupScope @srv -ErrorAction Stop
+        }
+        catch {
+            Write-Warning "讀取群組 $($item.Dn) 失敗：$($_.Exception.Message)"
+            continue
+        }
+        $via = if ($item.Chain.Count -gt 0) { '透過 ' + ($item.Chain -join ' > ') } elseif ($item.Primary) { '直接（主要群組）' } else { '直接' }
+        $rows.Add((ConvertTo-GroupRow -Group $g -Via $via))
+        foreach ($p in @($g.MemberOf)) {
+            if ($p -and $visited.Add([string]$p)) { $queue.Enqueue(@{ Dn = [string]$p; Chain = @($item.Chain + [string]$g.Name); Primary = $false }) }
+        }
+    }
+    return $rows.ToArray()
+}
+
+function Get-ADUserInfo {
+    <# 使用者詳細資料與所屬群組（唯讀） #>
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][string]$Identity)
+    $u = Get-ADUserDetail -Identity (Get-SamFromInput $Identity)
+    $groups = @(Get-PrincipalGroupDetail -Principal $u)
+    $expires = if ($u.AccountExpirationDate) { Format-InfoValue $u.AccountExpirationDate } else { '永不到期' }
+    $pairs = [ordered]@{
+        '姓名'         = Format-InfoValue $u.DisplayName
+        '帳號'         = Format-InfoValue $u.SamAccountName
+        'UPN'          = Format-InfoValue $u.UserPrincipalName
+        '員工編號'     = Format-InfoValue $u.EmployeeID
+        '部門'         = Format-InfoValue $u.Department
+        '職稱'         = Format-InfoValue $u.Title
+        '公司'         = Format-InfoValue $u.Company
+        '辦公室'       = Format-InfoValue $u.Office
+        'Email'        = Format-InfoValue $u.mail
+        '電話'         = Format-InfoValue $u.telephoneNumber
+        '手機'         = Format-InfoValue $u.mobile
+        '主管'         = if ($u.Manager) { Get-NameFromDN ([string]$u.Manager) } else { '' }
+        '帳號狀態'     = Get-UserStatusText -User $u -InactiveDays $script:Config.InactiveDays
+        '啟用'         = Format-InfoValue $u.Enabled
+        '鎖定'         = Format-InfoValue $u.LockedOut
+        '密碼已過期'   = Format-InfoValue $u.PasswordExpired
+        '密碼永不過期' = Format-InfoValue $u.PasswordNeverExpires
+        '密碼設定日'   = Format-InfoValue $u.PasswordLastSet
+        '最後登入'     = Format-InfoValue $u.LastLogonDate
+        '帳號到期日'   = $expires
+        '建立日期'     = Format-InfoValue $u.whenCreated
+        '描述'         = Format-InfoValue $u.Description
+        '所在 OU'      = Get-OUFromDN ([string]$u.DistinguishedName)
+        '所屬群組數'   = "$($groups.Count)（直接 $(@($groups | Where-Object { $_.Via -like '直接*' }).Count)）"
+    }
+    Write-QueryLog -Action '查詢使用者資訊' -Target ([string]$u.SamAccountName)
+    [pscustomobject]@{
+        User   = ConvertTo-UserRow -User $u
+        Info   = @(foreach ($k in $pairs.Keys) { [pscustomobject]@{ Field = $k; Value = $pairs[$k] } })
+        Groups = $groups
+    }
+}
+
+function Get-ADComputerInfo {
+    <# 電腦帳號詳細資料與所屬群組（唯讀） #>
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][string]$Identity)
+    $srv = Get-ADServerParam
+    $c = Get-ADComputer -Identity ("$Identity".Trim()) -Properties $script:ComputerProperties @srv -ErrorAction Stop
+    $groups = @(Get-PrincipalGroupDetail -Principal $c)
+    $pairs = [ordered]@{
+        '名稱'       = Format-InfoValue $c.Name
+        'DNS 名稱'   = Format-InfoValue $c.DNSHostName
+        '作業系統'   = Format-InfoValue $c.OperatingSystem
+        '版本'       = Format-InfoValue $c.OperatingSystemVersion
+        'IP 位址'    = Format-InfoValue $c.IPv4Address
+        '狀態'       = Get-ComputerStatusText -Computer $c
+        '最後登入'   = Format-InfoValue $c.LastLogonDate
+        '密碼設定日' = Format-InfoValue $c.PasswordLastSet
+        '建立日期'   = Format-InfoValue $c.whenCreated
+        '描述'       = Format-InfoValue $c.Description
+        '位置'       = Format-InfoValue $c.Location
+        '管理者'     = if ($c.ManagedBy) { Get-NameFromDN ([string]$c.ManagedBy) } else { '' }
+        '所在 OU'    = Get-OUFromDN ([string]$c.DistinguishedName)
+        '所屬群組數' = "$($groups.Count)"
+    }
+    Write-QueryLog -Action '查詢電腦資訊' -Target ([string]$c.Name)
+    [pscustomobject]@{
+        Computer = ConvertTo-ComputerRow -Computer $c
+        Info     = @(foreach ($k in $pairs.Keys) { [pscustomobject]@{ Field = $k; Value = $pairs[$k] } })
+        Groups   = $groups
+    }
+}
+
+function Compare-ADUserGroup {
+    <# 比較兩位使用者所屬的群組（含巢狀），列出各自獨有與共同的群組（唯讀） #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$UserA,
+        [Parameter(Mandatory)][string]$UserB
+    )
+    $a = Get-ADUserDetail -Identity (Get-SamFromInput $UserA)
+    $b = Get-ADUserDetail -Identity (Get-SamFromInput $UserB)
+    $nameA = [string]$a.SamAccountName
+    $nameB = [string]$b.SamAccountName
+    $mapA = @{}; foreach ($g in @(Get-PrincipalGroupDetail -Principal $a)) { $mapA[$g.DistinguishedName] = $g }
+    $mapB = @{}; foreach ($g in @(Get-PrincipalGroupDetail -Principal $b)) { $mapB[$g.DistinguishedName] = $g }
+
+    $keys = @(@($mapA.Keys) + @($mapB.Keys) | Sort-Object -Unique)
+    $rows = foreach ($k in $keys) {
+        $ga = $mapA[$k]; $gb = $mapB[$k]
+        $g = if ($ga) { $ga } else { $gb }
+        $result = if ($ga -and $gb) { '兩者都有' } elseif ($ga) { "只有 $nameA" } else { "只有 $nameB" }
+        $order = if ($ga -and $gb) { 2 } elseif ($ga) { 0 } else { 1 }
+        [pscustomobject]@{
+            Name              = $g.Name
+            Category          = $g.Category
+            Scope             = $g.Scope
+            Result            = $result
+            ViaA              = if ($ga) { $ga.Via } else { '' }
+            ViaB              = if ($gb) { $gb.Via } else { '' }
+            Description       = $g.Description
+            DistinguishedName = $k
+            SortOrder         = $order
+        }
+    }
+    Write-QueryLog -Action '比較使用者群組' -Target "$nameA vs $nameB"
+    [pscustomobject]@{
+        UserA = ConvertTo-UserRow -User $a
+        UserB = ConvertTo-UserRow -User $b
+        Rows  = @($rows | Sort-Object SortOrder, Name)
+    }
+}
+
+function Find-GroupFolderUsage {
+    <#
+    .SYNOPSIS
+        從指定路徑往下掃描，找出有給某個群組權限的資料夾（唯讀）。
+        預設只列「明確設定」的權限（起始資料夾一律列出），-IncludeInherited 會連繼承來的一起列。
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$Group,
+        [Parameter(Mandatory)][string]$Path,
+        [ValidateRange(0, 20)][int]$Depth = 3,
+        [switch]$IncludeInherited
+    )
+    $srv = Get-ADServerParam
+    $g = Get-ADGroup -Identity $Group @srv -ErrorAction Stop
+    $sid = [string]$g.SID
+    $namePattern = '\\' + [regex]::Escape([string]$g.SamAccountName) + '$'
+
+    $errs = $null
+    $folders = @($Path)
+    if ($Depth -gt 0) {
+        $folders += @(Get-ChildItem -LiteralPath $Path -Directory -Recurse -Depth ($Depth - 1) -Force -ErrorAction SilentlyContinue -ErrorVariable errs | ForEach-Object { $_.FullName })
+    }
+
+    $rows = New-Object System.Collections.Generic.List[object]
+    $i = 0
+    foreach ($f in $folders) {
+        $i++
+        Write-Progress -Activity "搜尋群組 $($g.Name) 的權限" -Status $f -PercentComplete ([int](100 * $i / [math]::Max(1, $folders.Count)))
+        try { $info = Get-PathAclInfo -Path $f }
+        catch {
+            $rows.Add([pscustomobject]@{ Folder = $f; Identity = ''; Rights = ''; AccessType = ''; AppliesTo = ''; IsInherited = $null; Note = "無法讀取：$($_.Exception.Message)" })
+            continue
+        }
+        foreach ($r in $info.Rules) {
+            $isMatch = ($sid -and $r.Sid -eq $sid) -or (-not $r.Sid -and $r.Identity -match $namePattern)
+            if (-not $isMatch) { continue }
+            if ($r.IsInherited -and -not $IncludeInherited -and $f -ne $Path) { continue }
+            $rows.Add([pscustomobject]@{
+                    Folder      = $f
+                    Identity    = $r.Identity
+                    Rights      = Convert-FileSystemRight -Rights $r.Rights
+                    AccessType  = if ($r.AccessControlType -eq 'Deny') { '拒絕' } else { '允許' }
+                    AppliesTo   = Convert-InheritanceToText -InheritanceFlags $r.InheritanceFlags -PropagationFlags $r.PropagationFlags
+                    IsInherited = $r.IsInherited
+                    Note        = ''
+                })
+        }
+    }
+    Write-Progress -Activity "搜尋群組 $($g.Name) 的權限" -Completed
+    foreach ($e in @($errs)) {
+        if (-not $e) { continue }
+        $rows.Add([pscustomobject]@{ Folder = [string]$e.TargetObject; Identity = ''; Rights = ''; AccessType = ''; AppliesTo = ''; IsInherited = $null; Note = "無法列出：$($e.Exception.Message)" })
+    }
+    Write-QueryLog -Action "查詢群組使用處(深度 $Depth)" -Target "$($g.Name) @ $Path"
+    return $rows.ToArray()
 }
 
 # ---------------------------------------------------------------------------
@@ -638,13 +957,19 @@ $script:ViewColumns = @{
     Member     = [ordered]@{ Name = '姓名'; SamAccountName = '帳號'; ObjectClass = '類型'; Department = '部門'; Title = '職稱'; Email = 'Email'; Phone = '電話'; Status = '帳號狀態'; LastLogonDate = '最後登入'; PasswordLastSet = '密碼設定日'; Via = '取得途徑' }
     Access     = [ordered]@{ User = '使用者'; MatchedBy = '對應項目'; Reason = '取得原因'; Certainty = '確定性'; Rights = '權限'; AccessType = '允許/拒絕'; AppliesTo = '套用到'; IsInherited = '繼承' }
     Scan       = [ordered]@{ Folder = '資料夾'; InheritanceBroken = '中斷繼承'; Identity = '帳戶'; Category = '類型'; Rights = '權限'; AccessType = '允許/拒絕'; AppliesTo = '套用到'; Note = '備註' }
+    Group      = [ordered]@{ Name = '群組名稱'; SamAccountName = '帳號'; Category = '類型'; Scope = '範圍'; Via = '取得方式'; Description = '描述' }
+    User       = [ordered]@{ Name = '姓名'; SamAccountName = '帳號'; Department = '部門'; Title = '職稱'; Email = 'Email'; Phone = '電話'; Status = '帳號狀態'; LastLogonDate = '最後登入' }
+    Computer   = [ordered]@{ Name = '電腦名稱'; OperatingSystem = '作業系統'; Status = '狀態'; LastLogonDate = '最後登入'; IPv4Address = 'IP 位址'; Description = '描述'; OU = '所在 OU' }
+    Info       = [ordered]@{ Field = '項目'; Value = '內容' }
+    Compare    = [ordered]@{ Name = '群組名稱'; Category = '類型'; Scope = '範圍'; Result = '比較結果'; ViaA = 'A 的取得方式'; ViaB = 'B 的取得方式'; Description = '描述' }
+    Usage      = [ordered]@{ Folder = '資料夾'; Identity = '帳戶'; Rights = '權限'; AccessType = '允許/拒絕'; AppliesTo = '套用到'; IsInherited = '繼承'; Note = '備註' }
 }
 
 function Format-ForDisplay {
     <# 轉成中文欄位名稱的顯示物件，並加上 # 編號 #>
     [CmdletBinding()]
     param(
-        [Parameter(Mandatory)][ValidateSet('Permission', 'Member', 'Access', 'Scan')][string]$Kind,
+        [Parameter(Mandatory)][ValidateSet('Permission', 'Member', 'Access', 'Scan', 'Group', 'User', 'Computer', 'Info', 'Compare', 'Usage')][string]$Kind,
         [AllowEmptyCollection()][object[]]$InputObject = @(),
         [switch]$NoIndex
     )
@@ -709,7 +1034,7 @@ function Export-QueryReport {
     #>
     [CmdletBinding()]
     param(
-        [Parameter(Mandatory)][ValidateSet('Permission', 'Member', 'Access', 'Scan')][string]$Kind,
+        [Parameter(Mandatory)][ValidateSet('Permission', 'Member', 'Access', 'Scan', 'Group', 'User', 'Computer', 'Info', 'Compare', 'Usage')][string]$Kind,
         [AllowEmptyCollection()][object[]]$InputObject = @(),
         [Parameter(Mandatory)][string]$Title,
         [ValidateSet('CSV', 'HTML', 'Both')][string]$Format = 'Both',
@@ -839,49 +1164,342 @@ function Read-ExportChoice {
     }
 }
 
+function Read-Choice {
+    param([string]$Prompt)
+    return "$(Read-Host $Prompt)".Trim()
+}
+
+function Read-YesNo {
+    <# 是否題：預設值由 -Default 決定 #>
+    param([string]$Prompt, [bool]$Default = $false)
+    $hint = if ($Default) { '[Y/n]' } else { '[y/N]' }
+    $a = Read-Choice "$Prompt$hint"
+    if (-not $a) { return $Default }
+    return ($a -match '^(y|yes|是)$')
+}
+
+function Read-PathInput {
+    <# 讀取並檢查路徑；直接按 Enter 或輸入 Q 回到上一層（回傳 $null） #>
+    param([string]$Prompt = '請輸入資料夾路徑（例如 \\fileserver\share\財務部），直接按 Enter 返回')
+    while ($true) {
+        $p = (Read-Choice $Prompt).Trim('"')
+        if (-not $p -or $p -match '^(q|quit|exit|b)$') { return $null }
+        if (Test-Path -LiteralPath $p) { return $p }
+        Write-Host "找不到路徑或沒有讀取權限：$p" -ForegroundColor Red
+    }
+}
+
+function Read-DepthInput {
+    param([int]$Default = 3, [int]$Min = 1)
+    $d = Read-Choice "要往下掃描幾層子資料夾？（$Min-20，預設 $Default；層數越多越久）"
+    $n = 0
+    if ([int]::TryParse($d, [ref]$n) -and $n -ge $Min -and $n -le 20) { return $n }
+    return $Default
+}
+
+function Select-GroupInteractive {
+    <# 輸入群組名稱（可只輸入一部分）→ 找到多筆時讓使用者挑選。回傳群組列或 $null #>
+    param([string]$Prompt = '請輸入群組名稱（可只輸入一部分），直接按 Enter 返回')
+    $name = Read-Choice $Prompt
+    if (-not $name) { return $null }
+    try { $found = @(Find-ADGroupByName -Name $name) }
+    catch { Write-Host "搜尋群組失敗：$($_.Exception.Message)" -ForegroundColor Red; return $null }
+    if ($found.Count -eq 0) { Write-Host "找不到名稱包含「$name」的群組。" -ForegroundColor Yellow; return $null }
+    $key = Get-SamFromInput $name
+    $exact = @($found | Where-Object { $_.SamAccountName -eq $key -or $_.Name -eq $key })
+    if ($exact.Count -eq 1) { return $exact[0] }
+    if ($found.Count -eq 1) { return $found[0] }
+    if ($found.Count -ge $script:MaxSearchResults) { Write-Host "符合的群組太多，只列出前 $($script:MaxSearchResults) 筆，可輸入更完整的名稱。" -ForegroundColor Yellow }
+    return (Select-OneItem -Items $found -Kind Group -Title "找到 $($found.Count) 個群組，請選擇")
+}
+
+function Select-UserInteractive {
+    <# 輸入帳號或姓名等關鍵字 → 帳號完全符合就直接使用，否則搜尋並讓使用者挑選。回傳 DN 或 $null #>
+    param([string]$Prompt = '請輸入使用者帳號或姓名（例如 jdoe、CORP\jdoe、王小明），直接按 Enter 返回')
+    $text = Read-Choice $Prompt
+    if (-not $text) { return $null }
+    try { return [string](Get-ADUserDetail -Identity (Get-SamFromInput $text)).DistinguishedName } catch { Write-Verbose "不是完整帳號，改用關鍵字搜尋：$text" }
+    try { $found = @(Find-ADUserByKeyword -Keyword $text) }
+    catch { Write-Host "搜尋帳號失敗：$($_.Exception.Message)" -ForegroundColor Red; return $null }
+    if ($found.Count -eq 0) { Write-Host "找不到符合「$text」的使用者。" -ForegroundColor Yellow; return $null }
+    if ($found.Count -eq 1) { return $found[0].DistinguishedName }
+    if ($found.Count -ge $script:MaxSearchResults) { Write-Host "符合的帳號太多，只列出前 $($script:MaxSearchResults) 筆，可輸入更完整的關鍵字。" -ForegroundColor Yellow }
+    $u = Select-OneItem -Items $found -Kind User -Title "找到 $($found.Count) 位使用者，請選擇"
+    if ($u) { return $u.DistinguishedName }
+    return $null
+}
+
+function Select-ComputerInteractive {
+    <# 輸入電腦名稱（可只輸入一部分）→ 回傳電腦 DN 或 $null #>
+    param([string]$Prompt = '請輸入電腦名稱（可只輸入一部分），直接按 Enter 返回')
+    $text = Read-Choice $Prompt
+    if (-not $text) { return $null }
+    try { $found = @(Find-ADComputerByName -Name $text) }
+    catch { Write-Host "搜尋電腦失敗：$($_.Exception.Message)" -ForegroundColor Red; return $null }
+    if ($found.Count -eq 0) { Write-Host "找不到名稱包含「$text」的電腦。" -ForegroundColor Yellow; return $null }
+    $exact = @($found | Where-Object { $_.Name -eq $text.Trim().TrimEnd('$') })
+    if ($exact.Count -eq 1) { return $exact[0].DistinguishedName }
+    if ($found.Count -eq 1) { return $found[0].DistinguishedName }
+    if ($found.Count -ge $script:MaxSearchResults) { Write-Host "符合的電腦太多，只列出前 $($script:MaxSearchResults) 筆。" -ForegroundColor Yellow }
+    $c = Select-OneItem -Items $found -Kind Computer -Title "找到 $($found.Count) 台電腦，請選擇"
+    if ($c) { return $c.DistinguishedName }
+    return $null
+}
+
+function Invoke-ListMenu {
+    <#
+        通用的清單操作：篩選、清除篩選、匯出、重新顯示、返回。
+        -Extra 可加入額外選項，例如 @{ Key = 'M'; Label = '查看群組成員'; Action = { param($current) ... } }
+    #>
+    param(
+        [object[]]$Rows, [string]$Kind, [string]$Title, [string]$ExportTitle, [string]$Subtitle = '',
+        [object[]]$Extra = @(), [scriptblock]$Summary
+    )
+    $all = @($Rows)
+    $current = $all
+    $filterText = ''
+    while ($true) {
+        Write-Host ''
+        $line = "共 $($all.Count) 筆"
+        if ($filterText) { $line += "　目前篩選：$filterText → $($current.Count) 筆" }
+        Write-Host $line -ForegroundColor Cyan
+        if ($Summary) { & $Summary $all }
+        $opts = @()
+        foreach ($x in $Extra) { $opts += "[$($x.Key)] $($x.Label)" }
+        $opts += '[F] 關鍵字篩選', '[C] 清除篩選', '[E] 匯出目前清單', '[S] 重新顯示', '[B] 返回'
+        Write-Host ($opts -join '  ')
+        $c = (Read-Choice '請選擇').ToUpperInvariant()
+        $handled = $false
+        foreach ($x in $Extra) {
+            if ($c -eq $x.Key) {
+                $r = & $x.Action $current $all
+                if ($null -ne $r) { $current = @($r); $filterText = $x.Label; Show-Table -Rows $current -Kind $Kind -Title "$Title（$($x.Label)）" }
+                $handled = $true
+            }
+        }
+        if ($handled) { continue }
+        switch ($c) {
+            'F' {
+                $kw = Read-Choice '請輸入關鍵字（多個關鍵字用空白分隔）'
+                $current = @(Select-ByKeyword -InputObject $all -Keyword $kw)
+                $filterText = $kw
+                Show-Table -Rows $current -Kind $Kind -Title "$Title（篩選：$kw）"
+            }
+            'C' { $current = $all; $filterText = ''; Show-Table -Rows $current -Kind $Kind -Title $Title }
+            'E' {
+                $sub = $Subtitle
+                if ($filterText) { $sub = ("$sub　篩選：$filterText").Trim('　') }
+                Read-ExportChoice -Rows $current -Kind $Kind -Title $ExportTitle -Subtitle $sub
+            }
+            'S' { Show-Result -Rows $current -Kind $Kind -Title $Title }
+            'B' { return }
+            default { Write-Host '請輸入選單上的代號。' -ForegroundColor Yellow }
+        }
+    }
+}
+
 function Invoke-MemberMenu {
-    param($Permission)
-    $recurseAns = Read-Host "是否展開巢狀群組（包含子群組內的成員）？[Y/n]"
-    $recurse = -not ($recurseAns -match '^(n|no|否)$')
-    $groupId = if ($Permission.DistinguishedName) { $Permission.DistinguishedName } else { $Permission.SamAccountName }
-    Write-Host "查詢群組「$($Permission.Identity)」成員中..." -ForegroundColor Gray
+    <# 列出群組成員並提供篩選 / 只看異常 / 匯出 #>
+    param([Parameter(Mandatory)][string]$GroupId, [string]$Label)
+    if (-not $Label) { $Label = Get-NameFromDN $GroupId }
+    $recurse = Read-YesNo -Prompt '是否展開巢狀群組（包含子群組內的成員）？' -Default $true
+    Write-Host "查詢群組「$Label」成員中..." -ForegroundColor Gray
     try {
-        $all = @(Get-GroupMemberDetail -Identity $groupId -Recurse:$recurse)
+        $all = @(Get-GroupMemberDetail -Identity $GroupId -Recurse:$recurse)
     }
     catch {
         Write-Host "查詢群組成員失敗：$($_.Exception.Message)" -ForegroundColor Red
         return
     }
-    $current = $all
-    $filterText = ''
-    $title = "群組成員：$($Permission.Identity)"
-    Show-Result -Rows $current -Kind Member -Title $title
-    while ($true) {
-        $users = @($all | Where-Object { $_.ObjectClass -eq '使用者' })
+    $title = "群組成員：$Label"
+    Show-Result -Rows $all -Kind Member -Title $title
+    $summary = {
+        param($rows)
+        $users = @($rows | Where-Object { $_.ObjectClass -eq '使用者' })
         $abnormal = @($users | Where-Object { $_.Status -ne '正常' })
-        Write-Host ''
-        Write-Host ("共 {0} 筆（使用者 {1} 位，其中狀態異常 {2} 位）{3}" -f $all.Count, $users.Count, $abnormal.Count, $(if ($filterText) { "　目前篩選：$filterText → $($current.Count) 筆" } else { '' })) -ForegroundColor Cyan
-        Write-Host '[F] 關鍵字篩選  [A] 只看狀態異常帳號  [C] 清除篩選  [E] 匯出目前清單  [S] 重新顯示  [B] 返回'
-        $c = "$(Read-Host '請選擇')".Trim().ToUpperInvariant()
-        switch ($c) {
-            'F' {
-                $kw = Read-Host '請輸入關鍵字（姓名、帳號、部門…，多個關鍵字用空白分隔）'
-                $current = @(Select-ByKeyword -InputObject $all -Keyword $kw)
-                $filterText = $kw
-                Show-Table -Rows $current -Kind Member -Title "$title（篩選：$kw）"
-            }
-            'A' {
-                $current = @($abnormal)
-                $filterText = '狀態異常'
-                Show-Table -Rows $current -Kind Member -Title "$title（狀態異常）"
-            }
-            'C' { $current = $all; $filterText = ''; Show-Table -Rows $current -Kind Member -Title $title }
-            'E' { Read-ExportChoice -Rows $current -Kind Member -Title $title -Subtitle $(if ($filterText) { "篩選：$filterText" } else { '' }) }
-            'S' { Show-Result -Rows $current -Kind Member -Title $title }
-            'B' { return }
-            default { Write-Host '請輸入選單上的代號。' -ForegroundColor Yellow }
-        }
+        Write-Host "使用者 $($users.Count) 位，其中狀態異常 $($abnormal.Count) 位" -ForegroundColor Cyan
     }
+    $extra = @(
+        @{ Key = 'A'; Label = '只看狀態異常帳號'; Action = { param($cur, $full) @($full | Where-Object { $_.ObjectClass -eq '使用者' -and $_.Status -ne '正常' }) } }
+        @{ Key = 'V'; Label = '查看某位成員的詳細資料'; Action = {
+                param($cur)
+                $users = @($cur | Where-Object { $_.ObjectClass -eq '使用者' })
+                $u = Select-OneItem -Items $users -Kind Member -Title '請選擇成員'
+                if ($u) { Invoke-UserInfoMenu -UserId $u.DistinguishedName }
+                $null
+            }
+        }
+    )
+    Invoke-ListMenu -Rows $all -Kind Member -Title $title -ExportTitle $title -Extra $extra -Summary $summary
+}
+
+function Get-DisplayWidth {
+    # 主控台顯示寬度：中日韓文字與全形符號佔 2 格
+    param([string]$Text)
+    $w = 0
+    foreach ($ch in $Text.ToCharArray()) { if ([int]$ch -ge 0x2E80) { $w += 2 } else { $w += 1 } }
+    return $w
+}
+
+function Show-InfoBlock {
+    param([object[]]$Info, [string]$Title)
+    Write-Host ''
+    Write-Host "=== $Title ===" -ForegroundColor Cyan
+    $w = 0
+    foreach ($i in $Info) { $w = [Math]::Max($w, (Get-DisplayWidth ([string]$i.Field))) }
+    foreach ($i in $Info) {
+        $pad = $w - (Get-DisplayWidth ([string]$i.Field))
+        if ($pad -lt 0) { $pad = 0 }
+        $color = 'Gray'
+        if ($i.Field -match '狀態' -and $i.Value -and $i.Value -ne '正常') { $color = 'Yellow' }
+        Write-Host ("  {0}{1} : {2}" -f $i.Field, (' ' * $pad), $i.Value) -ForegroundColor $color
+    }
+}
+
+function Invoke-PrincipalGroupMenu {
+    <# 使用者 / 電腦的所屬群組清單（可篩選、看成員、匯出） #>
+    param([object[]]$Groups, [string]$Title, [string]$ExportTitle)
+    Show-Result -Rows $Groups -Kind Group -Title $Title
+    $extra = @(
+        @{ Key = 'M'; Label = '查看某個群組的成員'; Action = {
+                param($cur)
+                $g = Select-OneItem -Items $cur -Kind Group -Title '請選擇群組'
+                if ($g) { Invoke-MemberMenu -GroupId $g.DistinguishedName -Label $g.Name }
+                $null
+            }
+        }
+        @{ Key = 'D'; Label = '只看直接加入的群組'; Action = { param($cur, $full) @($full | Where-Object { $_.Via -like '直接*' }) } }
+    )
+    Invoke-ListMenu -Rows $Groups -Kind Group -Title $Title -ExportTitle $ExportTitle -Extra $extra
+}
+
+function Invoke-UserInfoMenu {
+    param([Parameter(Mandatory)][string]$UserId)
+    try { $r = Get-ADUserInfo -Identity $UserId }
+    catch { Write-Host "查詢使用者失敗：$($_.Exception.Message)" -ForegroundColor Red; return }
+    $name = "$($r.User.SamAccountName)（$($r.User.Name)）"
+    Show-InfoBlock -Info $r.Info -Title "使用者資訊：$name"
+    $ex = Read-YesNo -Prompt '要匯出使用者資訊嗎？' -Default $false
+    if ($ex) { Read-ExportChoice -Rows $r.Info -Kind Info -Title "使用者資訊_$($r.User.SamAccountName)" -Subtitle $name }
+    Invoke-PrincipalGroupMenu -Groups $r.Groups -Title "所屬群組：$name" -ExportTitle "使用者所屬群組_$($r.User.SamAccountName)"
+}
+
+function Invoke-ComputerInfoMenu {
+    param([Parameter(Mandatory)][string]$ComputerId)
+    try { $r = Get-ADComputerInfo -Identity $ComputerId }
+    catch { Write-Host "查詢電腦失敗：$($_.Exception.Message)" -ForegroundColor Red; return }
+    $name = $r.Computer.Name
+    Show-InfoBlock -Info $r.Info -Title "電腦資訊：$name"
+    $ex = Read-YesNo -Prompt '要匯出電腦資訊嗎？' -Default $false
+    if ($ex) { Read-ExportChoice -Rows $r.Info -Kind Info -Title "電腦資訊_$name" -Subtitle $name }
+    Invoke-PrincipalGroupMenu -Groups $r.Groups -Title "所屬群組：$name" -ExportTitle "電腦所屬群組_$name"
+}
+
+function Invoke-GroupMenu {
+    $g = Select-GroupInteractive
+    if (-not $g) { return }
+    Write-Host ''
+    Write-Host "群組：$($g.Name)　類型：$($g.Category)　範圍：$($g.Scope)　描述：$($g.Description)" -ForegroundColor Cyan
+    Invoke-MemberMenu -GroupId $g.DistinguishedName -Label $g.Name
+}
+
+function Invoke-CompareMenu {
+    Write-Host '比較兩位使用者所屬的群組（含巢狀），常用於「新人的權限比照某位同事」。' -ForegroundColor Gray
+    $a = Select-UserInteractive -Prompt '請輸入使用者 A（帳號或姓名），直接按 Enter 返回'
+    if (-not $a) { return }
+    $b = Select-UserInteractive -Prompt '請輸入使用者 B（帳號或姓名），直接按 Enter 返回'
+    if (-not $b) { return }
+    try { $r = Compare-ADUserGroup -UserA $a -UserB $b }
+    catch { Write-Host "比較失敗：$($_.Exception.Message)" -ForegroundColor Red; return }
+    $na = $r.UserA.SamAccountName; $nb = $r.UserB.SamAccountName
+    $diff = @($r.Rows | Where-Object { $_.Result -ne '兩者都有' })
+    Write-Host ''
+    Write-Host "A = $na（$($r.UserA.Name)，$($r.UserA.Department)）　B = $nb（$($r.UserB.Name)，$($r.UserB.Department)）" -ForegroundColor Cyan
+    Write-Host ("只有 A：{0} 個　只有 B：{1} 個　兩者都有：{2} 個" -f @($r.Rows | Where-Object { $_.Result -eq "只有 $na" }).Count,
+        @($r.Rows | Where-Object { $_.Result -eq "只有 $nb" }).Count, @($r.Rows | Where-Object { $_.Result -eq '兩者都有' }).Count) -ForegroundColor Cyan
+    $title = "群組比較：A=$na、B=$nb"
+    if ($diff.Count -eq 0) { Write-Host '兩人的群組完全相同。' -ForegroundColor Green }
+    Show-Result -Rows $diff -Kind Compare -Title "$title（只列差異）"
+    $all = @($r.Rows)
+    $extra = @(
+        @{ Key = 'D'; Label = '只看差異'; Action = { param($cur, $full) @($full | Where-Object { $_.Result -ne '兩者都有' }) } }
+        @{ Key = 'L'; Label = '列出全部'; Action = { param($cur, $full) @($full) } }
+    )
+    Invoke-ListMenu -Rows $all -Kind Compare -Title $title -ExportTitle "群組比較_$($na)_$($nb)" -Subtitle "A=$na（$($r.UserA.Name)）、B=$nb（$($r.UserB.Name)）" -Extra $extra
+}
+
+function Invoke-UserSearchMenu {
+    while ($true) {
+        $kw = Read-Choice '請輸入關鍵字（帳號、姓名、部門、職稱、Email、員工編號），直接按 Enter 返回'
+        if (-not $kw) { return }
+        try { $found = @(Find-ADUserByKeyword -Keyword $kw) }
+        catch { Write-Host "搜尋失敗：$($_.Exception.Message)" -ForegroundColor Red; continue }
+        if ($found.Count -eq 0) { Write-Host "找不到符合「$kw」的使用者。" -ForegroundColor Yellow; continue }
+        if ($found.Count -ge $script:MaxSearchResults) { Write-Host "符合的帳號太多，只列出前 $($script:MaxSearchResults) 筆，可輸入更完整的關鍵字。" -ForegroundColor Yellow }
+        $title = "搜尋結果：$kw"
+        Show-Result -Rows $found -Kind User -Title $title
+        $extra = @(
+            @{ Key = 'V'; Label = '查看某人的詳細資料'; Action = {
+                    param($cur)
+                    $u = Select-OneItem -Items $cur -Kind User -Title '請選擇使用者'
+                    if ($u) { Invoke-UserInfoMenu -UserId $u.DistinguishedName }
+                    $null
+                }
+            }
+            @{ Key = 'A'; Label = '只看狀態異常帳號'; Action = { param($cur, $full) @($full | Where-Object { $_.Status -ne '正常' }) } }
+        )
+        Invoke-ListMenu -Rows $found -Kind User -Title $title -ExportTitle "帳號搜尋_$kw" -Extra $extra
+    }
+}
+
+function Show-UserPathAccess {
+    <# 顯示反查結果並詢問是否匯出 #>
+    param([object[]]$Rows, [string]$User, [string]$Path)
+    if ($Rows.Count -eq 0) {
+        Write-Host "在此路徑上找不到 $User 可取得權限的項目（依 AD 群組判斷）。" -ForegroundColor Yellow
+        return
+    }
+    Show-Result -Rows $Rows -Kind Access -Title "使用者 $User 在 $Path 的權限來源"
+    if (@($Rows | Where-Object { $_.AccessType -eq '拒絕' -and $_.Certainty -eq '確定' }).Count -gt 0) {
+        Write-Host '注意：此使用者有符合的「拒絕」權限，實際可能無法存取。' -ForegroundColor Yellow
+    }
+    if (Read-YesNo -Prompt '要匯出這份結果嗎？' -Default $false) {
+        Read-ExportChoice -Rows $Rows -Kind Access -Title "使用者權限反查_$User" -Subtitle $Path
+    }
+}
+
+function Invoke-UserPathAccessMenu {
+    $u = Select-UserInteractive
+    if (-not $u) { return }
+    $path = Read-PathInput
+    if (-not $path) { return }
+    try {
+        $sam = (Get-ADUserDetail -Identity $u).SamAccountName
+        $rows = @(Find-UserPathAccess -Path $path -User $u)
+        Show-UserPathAccess -Rows $rows -User $sam -Path $path
+    }
+    catch { Write-Host "反查失敗：$($_.Exception.Message)" -ForegroundColor Red }
+}
+
+function Invoke-ComputerMenu {
+    $c = Select-ComputerInteractive
+    if ($c) { Invoke-ComputerInfoMenu -ComputerId $c }
+}
+
+function Invoke-GroupUsageMenu {
+    $g = Select-GroupInteractive
+    if (-not $g) { return }
+    $path = Read-PathInput -Prompt '請輸入要從哪個資料夾開始找（例如 \\fileserver\share），直接按 Enter 返回'
+    if (-not $path) { return }
+    $depth = Read-DepthInput -Default 3 -Min 0
+    $inherit = Read-YesNo -Prompt '是否也列出「繼承」來的權限？（選否只列出明確設定的資料夾，結果較精簡）' -Default $false
+    try { $rows = @(Find-GroupFolderUsage -Group $g.DistinguishedName -Path $path -Depth $depth -IncludeInherited:$inherit) }
+    catch { Write-Host "查詢失敗：$($_.Exception.Message)" -ForegroundColor Red; return }
+    $title = "群組 $($g.Name) 的權限位置：$path"
+    if ($rows.Count -eq 0) { Write-Host "在 $path（往下 $depth 層）找不到給「$($g.Name)」的權限。" -ForegroundColor Yellow; return }
+    Write-Host '提示：只比對這個群組本身；若它被加進其他群組，透過上層群組取得的權限不會列出。' -ForegroundColor DarkGray
+    Show-Result -Rows $rows -Kind Usage -Title $title
+    Invoke-ListMenu -Rows $rows -Kind Usage -Title $title -ExportTitle "群組權限位置_$($g.Name)" -Subtitle "$path（深度 $depth）"
 }
 
 function Invoke-PathMenu {
@@ -892,7 +1510,7 @@ function Invoke-PathMenu {
     }
     catch {
         Write-Host "讀取權限失敗：$($_.Exception.Message)" -ForegroundColor Red
-        return
+        return 'next'
     }
     $perms = @($result.Permissions)
     $title = "權限清單：$Path"
@@ -911,66 +1529,93 @@ function Invoke-PathMenu {
 
     while ($true) {
         Write-Host ''
-        Write-Host '[1] 選擇群組查看成員  [2] 反查使用者權限  [3] 掃描子資料夾  [4] 匯出權限清單  [5] 重新顯示  [N] 查詢其他路徑  [Q] 離開'
-        $c = "$(Read-Host '請選擇')".Trim().ToUpperInvariant()
+        Write-Host '[1] 選擇群組查看成員  [2] 反查使用者權限  [3] 掃描子資料夾  [4] 匯出權限清單  [5] 重新顯示  [N] 查詢其他路徑  [B] 回主選單  [Q] 離開'
+        $c = (Read-Choice '請選擇').ToUpperInvariant()
         switch ($c) {
             '1' {
                 $groups = @($perms | Where-Object { $_.CanExpand })
                 if ($groups.Count -eq 0) { Write-Host '這個路徑上沒有可展開的 AD 群組。' -ForegroundColor Yellow; break }
                 $g = Select-OneItem -Items $groups -Kind Permission -Title '請選擇要查詢的群組'
-                if ($g) { Invoke-MemberMenu -Permission $g }
+                if ($g) {
+                    $gid = if ($g.DistinguishedName) { $g.DistinguishedName } else { $g.SamAccountName }
+                    Invoke-MemberMenu -GroupId $gid -Label $g.Identity
+                }
             }
             '2' {
-                $user = Read-Host '請輸入使用者帳號（例如 jdoe 或 CORP\jdoe）'
-                if (-not $user) { break }
+                $u = Select-UserInteractive
+                if (-not $u) { break }
                 try {
-                    $rows = @(Find-UserPathAccess -Path $Path -User $user -PermissionResult $result)
-                    if ($rows.Count -eq 0) {
-                        Write-Host "在此路徑上找不到 $user 可取得權限的項目（依 AD 群組判斷）。" -ForegroundColor Yellow
-                    }
-                    else {
-                        Show-Result -Rows $rows -Kind Access -Title "使用者 $user 在 $Path 的權限來源"
-                        if (@($rows | Where-Object { $_.AccessType -eq '拒絕' -and $_.Certainty -eq '確定' }).Count -gt 0) {
-                            Write-Host '注意：此使用者有符合的「拒絕」權限，實際可能無法存取。' -ForegroundColor Yellow
-                        }
-                        $ex = Read-Host '要匯出這份結果嗎？[y/N]'
-                        if ($ex -match '^(y|yes|是)$') { Read-ExportChoice -Rows $rows -Kind Access -Title "使用者權限反查_$user" -Subtitle $Path }
-                    }
+                    $sam = (Get-ADUserDetail -Identity $u).SamAccountName
+                    $rows = @(Find-UserPathAccess -Path $Path -User $u -PermissionResult $result)
+                    Show-UserPathAccess -Rows $rows -User $sam -Path $Path
                 }
                 catch { Write-Host "反查失敗：$($_.Exception.Message)" -ForegroundColor Red }
             }
             '3' {
-                $d = Read-Host '要往下掃描幾層？（1-20，預設 3；層數越多越久）'
-                $depth = 3
-                $tmp = 0
-                if ([int]::TryParse("$d", [ref]$tmp) -and $tmp -ge 1 -and $tmp -le 20) { $depth = $tmp }
+                $depth = Read-DepthInput -Default 3 -Min 1
                 $rows = @(Get-SubfolderPermissionDiff -Path $Path -Depth $depth)
                 if ($rows.Count -eq 0) { Write-Host '所有子資料夾都是單純繼承上層權限，沒有差異。' -ForegroundColor Green }
                 else {
                     Show-Result -Rows $rows -Kind Scan -Title "子資料夾權限差異：$Path"
-                    $ex = Read-Host '要匯出這份結果嗎？[y/N]'
-                    if ($ex -match '^(y|yes|是)$') { Read-ExportChoice -Rows $rows -Kind Scan -Title '子資料夾權限差異' -Subtitle $Path }
+                    if (Read-YesNo -Prompt '要匯出這份結果嗎？' -Default $false) { Read-ExportChoice -Rows $rows -Kind Scan -Title '子資料夾權限差異' -Subtitle $Path }
                 }
             }
             '4' { Read-ExportChoice -Rows $perms -Kind Permission -Title '權限清單' -Subtitle "$Path　$sub" }
             '5' { & $showSummary }
             'N' { return 'next' }
+            'B' { return 'menu' }
             'Q' { return 'quit' }
             default { Write-Host '請輸入選單上的代號。' -ForegroundColor Yellow }
         }
     }
 }
 
+function Invoke-PathFlow {
+    <# 查詢路徑權限的流程；回傳 'menu'（回主選單）或 'quit'（離開） #>
+    param([string]$Path)
+    while ($true) {
+        if (-not $Path) {
+            $Path = Read-PathInput
+            if (-not $Path) { return 'menu' }
+        }
+        elseif (-not (Test-Path -LiteralPath $Path)) {
+            Write-Host "找不到路徑或沒有讀取權限：$Path" -ForegroundColor Red
+            $Path = $null
+            continue
+        }
+        $r = Invoke-PathMenu -Path $Path
+        $Path = $null
+        if ($r -eq 'quit') { return 'quit' }
+        if ($r -eq 'menu') { return 'menu' }
+    }
+}
+
+function Show-MainMenu {
+    Write-Host ''
+    Write-Host '================ 主選單 ================' -ForegroundColor Cyan
+    Write-Host '  [1] 查詢路徑權限（誰有這個資料夾的權限）'
+    Write-Host '  [2] 查群組成員'
+    Write-Host '  [3] 查使用者資訊與所屬群組'
+    Write-Host '  [4] 比較兩位使用者的群組'
+    Write-Host '  [5] 搜尋帳號（姓名、部門、職稱、Email…）'
+    Write-Host '  [6] 反查使用者在某個路徑的權限'
+    Write-Host '  [7] 查電腦帳號'
+    Write-Host '  [8] 查群組被用在哪些資料夾'
+    Write-Host '  [Q] 離開'
+}
+
 function Start-ADPermissionQuery {
     <#
     .SYNOPSIS
-        互動式啟動：輸入路徑 → 列出權限 → 選群組 → 列出成員。全程唯讀。
+        互動式啟動：主選單可查詢路徑權限、群組成員、使用者 / 電腦資訊、比較使用者群組等。全程唯讀。
+    .PARAMETER Path
+        直接查詢這個路徑的權限（查完回到主選單）。
     #>
     [CmdletBinding()]
     param([string]$Path)
 
     Write-Host '========================================' -ForegroundColor Cyan
-    Write-Host ' 資料夾權限查詢工具（唯讀，不會修改 AD）' -ForegroundColor Cyan
+    Write-Host ' AD 權限查詢工具（唯讀，不會修改 AD）' -ForegroundColor Cyan
     Write-Host '========================================' -ForegroundColor Cyan
 
     if (-not (Get-Command -Name Get-ADUser -ErrorAction SilentlyContinue)) {
@@ -980,25 +1625,30 @@ function Start-ADPermissionQuery {
         return
     }
 
+    if ($Path) {
+        if ((Invoke-PathFlow -Path $Path) -eq 'quit') { return }
+    }
+
     while ($true) {
-        if (-not $Path) {
-            $Path = Read-Host "`n請輸入資料夾路徑（例如 \\fileserver\share\財務部），輸入 Q 離開"
-            if ($null -eq $Path) { return }
-            $Path = $Path.Trim().Trim('"')
-            if (-not $Path) { continue }
-            if ($Path -match '^(q|quit|exit)$') { return }
+        Show-MainMenu
+        $c = (Read-Choice '請選擇').ToUpperInvariant()
+        switch ($c) {
+            '1' { if ((Invoke-PathFlow) -eq 'quit') { return } }
+            '2' { Invoke-GroupMenu }
+            '3' { $u = Select-UserInteractive; if ($u) { Invoke-UserInfoMenu -UserId $u } }
+            '4' { Invoke-CompareMenu }
+            '5' { Invoke-UserSearchMenu }
+            '6' { Invoke-UserPathAccessMenu }
+            '7' { Invoke-ComputerMenu }
+            '8' { Invoke-GroupUsageMenu }
+            'Q' { return }
+            default { Write-Host '請輸入選單上的代號。' -ForegroundColor Yellow }
         }
-        if (-not (Test-Path -LiteralPath $Path)) {
-            Write-Host "找不到路徑或沒有讀取權限：$Path" -ForegroundColor Red
-            $Path = $null
-            continue
-        }
-        $r = Invoke-PathMenu -Path $Path
-        $Path = $null
-        if ($r -eq 'quit') { return }
     }
 }
 
 Export-ModuleMember -Function Start-ADPermissionQuery, Set-ADPermissionQueryOption, Get-PathPermission, Get-GroupMemberDetail,
 Find-UserPathAccess, Get-SubfolderPermissionDiff, Export-QueryReport, Select-ByKeyword, Format-ForDisplay,
-Convert-FileSystemRight, Convert-InheritanceToText, Resolve-AclIdentity, Get-PathAclInfo
+Convert-FileSystemRight, Convert-InheritanceToText, Resolve-AclIdentity, Get-PathAclInfo,
+Find-ADGroupByName, Find-ADUserByKeyword, Find-ADComputerByName, Get-PrincipalGroupDetail, Get-ADUserInfo,
+Get-ADComputerInfo, Compare-ADUserGroup, Find-GroupFolderUsage

@@ -32,14 +32,20 @@ Describe 'ADPermissionQuery' {
             if ($Identity) { return (Find-FakeAD $Identity) }
         }
         Mock -ModuleName ADPermissionQuery Get-ADGroup {
-            $o = Find-FakeAD $Identity
-            if (-not $o -or @($o.objectClass)[-1] -ne 'group') { throw "找不到群組 $Identity" }
-            [pscustomobject]@{ Name = $o.name; DistinguishedName = $o.distinguishedName; SamAccountName = $o.sAMAccountName; member = $global:GroupMembers[$o.distinguishedName] }
+            if ($Filter) { return (Search-FakeAD -Class group -Filter $Filter) }
+            Get-FakeADGroup -Identity $Identity
+        }
+        Mock -ModuleName ADPermissionQuery Get-ADComputer {
+            if ($Filter) { return (Search-FakeAD -Class computer -Filter $Filter) }
+            Get-FakeADComputer -Identity $Identity
         }
         Mock -ModuleName ADPermissionQuery Get-ADGroupMember {
             foreach ($dn in @($global:GroupMembers[[string]$Identity])) { Find-FakeAD $dn }
         }
-        Mock -ModuleName ADPermissionQuery Get-ADUser { Get-FakeADUser -Identity $Identity }
+        Mock -ModuleName ADPermissionQuery Get-ADUser {
+            if ($Filter) { return (Search-FakeAD -Class user -Filter $Filter) }
+            Get-FakeADUser -Identity $Identity
+        }
         Mock -ModuleName ADPermissionQuery Get-Acl { New-FakeAcl -Rules $global:FinanceRules -Owner 'CORP\FileAdmin' }
     }
 
@@ -292,6 +298,99 @@ Describe 'ADPermissionQuery' {
         }
     }
 
+
+    Context '搜尋與查詢 AD 物件' {
+        It '用部分名稱搜尋群組，結果依名稱排序，且會跳脫單引號' {
+            $g = Find-ADGroupByName -Name 'Finance'
+            $g.Name | Should -Be @('Finance-Managers', 'Finance-RO', 'Finance-RW')
+            $g[0].Category | Should -Be '安全性'
+            $g[0].Scope | Should -Be '網域本機'
+            Find-ADGroupByName -Name "o'neil" | Out-Null
+            Should -Invoke -ModuleName ADPermissionQuery Get-ADGroup -ParameterFilter { $Filter -like "*'*o''neil*'*" -and $ResultSetSize -eq 200 }
+        }
+        It '用部門等關鍵字搜尋使用者' {
+            $u = Find-ADUserByKeyword -Keyword '財務'
+            $u.SamAccountName | Should -Be @('alice', 'bob')
+            ($u | Where-Object SamAccountName -eq 'bob').Status | Should -Be '鎖定、密碼已過期'
+        }
+        It '搜尋電腦帳號並顯示狀態' {
+            $c = Find-ADComputerByName -Name 'PC'
+            $c.Name | Should -Be @('PC01', 'PC02')
+            ($c | Where-Object Name -eq 'PC01').Status | Should -Be '正常'
+            ($c | Where-Object Name -eq 'PC02').Status | Should -Be '停用'
+            ($c | Where-Object Name -eq 'PC01').OU | Should -Be 'OU=Computers,DC=corp,DC=local'
+        }
+        It '使用者資訊：基本資料、主管、OU 與所屬群組（含巢狀與主要群組）' {
+            $r = Get-ADUserInfo -Identity 'CORP\bob'
+            $info = @{}; foreach ($i in $r.Info) { $info[$i.Field] = $i.Value }
+            $info['姓名'] | Should -Be '林大明'
+            $info['部門'] | Should -Be '財務部'
+            $info['帳號狀態'] | Should -Be '鎖定、密碼已過期'
+            $info['帳號到期日'] | Should -Be '永不到期'
+            $info['所在 OU'] | Should -Be 'OU=Users,DC=corp,DC=local'
+            ($r.Groups | Where-Object Name -eq 'Finance-RW').Via | Should -Be '直接'
+            ($r.Groups | Where-Object Name -eq 'Finance-Managers').Via | Should -Be '透過 Finance-RW'
+            ($r.Groups | Where-Object Name -eq 'Domain Users').Via | Should -Be '直接（主要群組）'
+            $r.Groups.Count | Should -Be 3
+            (Get-ADUserInfo -Identity 'alice').Info | Where-Object Field -eq '主管' | ForEach-Object Value | Should -Be 'Carol Chen'
+        }
+        It '電腦資訊與所屬群組' {
+            $r = Get-ADComputerInfo -Identity 'PC01'
+            $info = @{}; foreach ($i in $r.Info) { $info[$i.Field] = $i.Value }
+            $info['作業系統'] | Should -Be 'Windows 11 企業版'
+            $info['IP 位址'] | Should -Be '10.0.0.11'
+            $info['狀態'] | Should -Be '正常'
+            ($r.Groups | Where-Object Name -eq 'Finance-RO').Via | Should -Be '直接'
+        }
+        It '比較兩位使用者的群組' {
+            $r = Compare-ADUserGroup -UserA 'alice' -UserB 'dave'
+            ($r.Rows | Where-Object Result -eq '只有 alice').Name | Sort-Object | Should -Be @('Finance-Managers', 'Finance-RW', 'VPN-Users')
+            ($r.Rows | Where-Object Result -eq '只有 dave').Name | Should -Be 'Finance-RO'
+            ($r.Rows | Where-Object Result -eq '兩者都有').Name | Should -Be 'Domain Users'
+            $r.Rows[0].Result | Should -Be '只有 alice'
+            $r.Rows[-1].Result | Should -Be '兩者都有'
+            ($r.Rows | Where-Object Name -eq 'VPN-Users').Category | Should -Be '發佈'
+        }
+        It '比較時也會把巢狀取得的群組算進去' {
+            $r = Compare-ADUserGroup -UserA 'alice' -UserB 'bob'
+            ($r.Rows | Where-Object Result -ne '兩者都有').Name | Should -Be 'VPN-Users'
+            ($r.Rows | Where-Object Name -eq 'Finance-Managers').ViaB | Should -Be '透過 Finance-RW'
+        }
+    }
+
+    Context '群組被用在哪些資料夾 Find-GroupFolderUsage' {
+        BeforeEach {
+            Mock -ModuleName ADPermissionQuery Get-ChildItem {
+                [pscustomobject]@{ FullName = "$($global:SharePath)\2025" }
+                [pscustomobject]@{ FullName = "$($global:SharePath)\Projects" }
+            }
+            Mock -ModuleName ADPermissionQuery Get-Acl -ParameterFilter { $LiteralPath -like '*\2025' } {
+                New-FakeAcl -Rules @(New-TestRule 'CORP\Finance-RW' "$($global:DomainSid)-1101" 1245631 -Inherited $true)
+            }
+            Mock -ModuleName ADPermissionQuery Get-Acl -ParameterFilter { $LiteralPath -like '*\Projects' } {
+                New-FakeAcl -Rules @(
+                    New-TestRule 'CORP\Finance-RW' "$($global:DomainSid)-1101" 1245631 -Inherited $true
+                    New-TestRule 'CORP\Finance-RW' "$($global:DomainSid)-1101" 1179817 -Type Deny
+                )
+            }
+        }
+        It '預設只列明確設定的權限（起始資料夾一律列出）' {
+            $rows = Find-GroupFolderUsage -Group 'Finance-RW' -Path $global:SharePath -Depth 2
+            $rows.Folder | Should -Be @($global:SharePath, "$($global:SharePath)\Projects")
+            ($rows | Where-Object Folder -like '*\Projects').AccessType | Should -Be '拒絕'
+            ($rows | Where-Object Folder -eq $global:SharePath).Rights | Should -Be '修改'
+        }
+        It '-IncludeInherited 會連繼承的一起列' {
+            $rows = Find-GroupFolderUsage -Group 'Finance-RW' -Path $global:SharePath -Depth 2 -IncludeInherited
+            @($rows).Count | Should -Be 4
+        }
+        It '深度 0 只查起始資料夾' {
+            $rows = Find-GroupFolderUsage -Group 'Finance-RO' -Path $global:SharePath -Depth 0
+            @($rows).Count | Should -Be 1
+            Should -Invoke -ModuleName ADPermissionQuery Get-ChildItem -Times 0 -Exactly
+        }
+    }
+
     Context '互動式流程（模擬使用者輸入）' {
         BeforeEach {
             $global:HostOutput = New-Object System.Collections.Generic.List[string]
@@ -311,6 +410,7 @@ Describe 'ADPermissionQuery' {
         It '完整走過：輸入路徑 → 選群組 → 篩選 → 匯出 → 反查 → 掃描 → 離開' {
             $out = Join-Path $TestDrive 'ui'
             @(
+                '1'                    # 主選單：查詢路徑權限
                 '\\fs01\nope'          # 不存在的路徑
                 "`"$($global:SharePath)`""  # 帶引號的路徑
                 '1', '1', 'Y'          # 選群組 → 第 1 個 (Finance-RW) → 展開巢狀
@@ -324,7 +424,8 @@ Describe 'ADPermissionQuery' {
                 '3', '2', 'n'          # 掃描子資料夾
                 '4', '3', $out         # 匯出權限清單
                 '1', '99', '2', 'n', 'B'   # 錯誤編號 → 第 2 個群組，不展開
-                'N', 'q'               # 查詢其他路徑 → 離開
+                'N', 'q'               # 查詢其他路徑 → 輸入 q 回主選單
+                'Q'                    # 主選單離開
             ) | ForEach-Object { $global:InputQueue.Enqueue($_) }
 
             { Start-ADPermissionQuery } | Should -Not -Throw
@@ -343,6 +444,56 @@ Describe 'ADPermissionQuery' {
             ($files | Where-Object Name -like '使用者權限反查_alice*.html').Count | Should -Be 1
             ($files | Where-Object Name -like '權限清單*').Count | Should -Be 2
             Should -Invoke -ModuleName ADPermissionQuery Get-ADGroupMember -ParameterFilter { $Identity -eq 'CN=Finance-RO,OU=Groups,DC=corp,DC=local' } -Times 1 -Exactly
+        }
+
+
+        It '主選單：群組、使用者、比較、搜尋、反查、電腦、群組使用處都能操作' {
+            $out = Join-Path $TestDrive 'menu'
+            @(
+                'x'                                    # 錯誤代號
+                '2', 'Finance', '3', 'n', 'B'          # 查群組：部分名稱 → 第 3 個 (Finance-RW) → 不展開 → 返回
+                '2', 'zzz'                             # 查群組：找不到
+                '3', 'alice', 'y', '1', $out           # 使用者資訊（帳號完全符合）→ 匯出資訊 CSV
+                'D', 'M', '1', 'n', 'B'                # 只看直接群組 → 看第 1 個群組成員 → 返回
+                'E', '2', $out, 'B'                    # 匯出所屬群組 HTML → 返回
+                '4', 'alice', '吳'                     # 比較：B 用姓名搜尋（唯一）
+                'L', 'E', '1', $out, 'B'               # 列出全部 → 匯出 → 返回
+                '5', '財務', 'A', 'V', '1', 'n', 'B', 'B', ''   # 搜尋帳號 → 只看異常 → 查看 bob → 不匯出 → 返回 → 返回 → 結束搜尋
+                '6', 'jdoe', $global:SharePath, 'n'    # 反查使用者在路徑的權限
+                '7', 'PC', '1', 'n', 'B'               # 查電腦：PC01 → 不匯出 → 返回
+                '8', 'Finance-RW', $global:SharePath, '1', 'n', 'E', '1', $out, 'B'   # 群組使用處 → 匯出
+                'Q'
+            ) | ForEach-Object { $global:InputQueue.Enqueue($_) }
+
+            { Start-ADPermissionQuery } | Should -Not -Throw
+            $global:InputQueue.Count | Should -Be 0
+            $text = $global:HostOutput -join "`n"
+            $text | Should -Match '主選單'
+            $text | Should -Match '找不到名稱包含「zzz」的群組'
+            $text | Should -Match '使用者資訊：alice（王小美）'
+            $text | Should -Match '主管\s+: Carol Chen'
+            $text | Should -Match 'A = alice（王小美，財務部）　B = dave（吳志豪，稽核室）'
+            $text | Should -Match '只有 A：3 個　只有 B：1 個　兩者都有：1 個'
+            $text | Should -Match '使用者資訊：bob（林大明）'
+            $text | Should -Match '使用者 jdoe 在 .* 的權限來源'
+            $text | Should -Match '電腦資訊：PC01'
+            $text | Should -Match 'Windows 11 企業版'
+            $text | Should -Match '群組 Finance-RW 的權限位置'
+            $files = @(Get-ChildItem -LiteralPath $out -File | ForEach-Object Name)
+            ($files -like '使用者資訊_alice_*.csv').Count | Should -Be 1
+            ($files -like '使用者所屬群組_alice_*.html').Count | Should -Be 1
+            ($files -like '群組比較_alice_dave_*.csv').Count | Should -Be 1
+            ($files -like '群組權限位置_Finance-RW_*.csv').Count | Should -Be 1
+            $csv = Import-Csv -LiteralPath (Get-ChildItem -LiteralPath $out -Filter '群組比較_*.csv').FullName
+            $csv.Count | Should -Be 5
+            Should -Invoke -ModuleName ADPermissionQuery Get-ADGroupMember -ParameterFilter { $Identity -eq 'CN=Finance-RW,OU=Groups,DC=corp,DC=local' }
+        }
+
+        It '啟動時指定 -Path，查完回主選單再離開' {
+            @('B', 'Q') | ForEach-Object { $global:InputQueue.Enqueue($_) }
+            Start-ADPermissionQuery -Path $global:SharePath
+            $global:InputQueue.Count | Should -Be 0
+            ($global:HostOutput -join "`n") | Should -Match '主選單'
         }
 
         It '有 Out-GridView 時用視窗挑選群組' {

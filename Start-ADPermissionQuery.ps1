@@ -4,7 +4,8 @@
     Folder / share permission query tool for Active Directory (READ-ONLY).
 
 .DESCRIPTION
-    Enter a folder or UNC path, list who has permissions, pick a group and list its members.
+    Main menu: folder permissions, group members, user / computer info and groups,
+    compare two users' groups, account search, and where a group is used on folders.
     This tool only READS AD and NTFS permissions. It never creates, changes or deletes anything in AD.
     See README.md for the full (Traditional Chinese) documentation.
 

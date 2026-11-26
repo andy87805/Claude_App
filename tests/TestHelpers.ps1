@@ -1,12 +1,12 @@
 ﻿# 測試共用：建立「假的」AD cmdlet 與 ACL，讓測試不需要真的連到 AD。
 # 這些只是空殼函式，實際行為由各測試中的 Mock 決定。
 
-foreach ($name in 'Get-ADObject', 'Get-ADUser', 'Get-ADGroup', 'Get-ADGroupMember') {
+foreach ($name in 'Get-ADObject', 'Get-ADUser', 'Get-ADGroup', 'Get-ADGroupMember', 'Get-ADComputer') {
     if (-not (Get-Command -Name $name -ErrorAction SilentlyContinue)) {
         $sb = [scriptblock]::Create(@"
 function global:$name {
     [CmdletBinding()]
-    param(`$Identity, `$Filter, `$Properties, `$Server)
+    param(`$Identity, `$Filter, `$Properties, `$Server, `$ResultSetSize)
     throw '$name 尚未被 Mock'
 }
 "@)
@@ -83,18 +83,30 @@ Add-FakeAD (New-FakeADObject user 'bob' 'Bob Lin' "CN=Bob Lin,$uou" "$($global:D
 Add-FakeAD (New-FakeADObject user 'carol' 'Carol Chen' "CN=Carol Chen,$uou" "$($global:DomainSid)-1203" '陳怡君')
 Add-FakeAD (New-FakeADObject user 'dave' 'Dave Wu' "CN=Dave Wu,$uou" "$($global:DomainSid)-1204" '吳志豪')
 Add-FakeAD (New-FakeADObject user 'jdoe' 'John Doe' "CN=John Doe,$uou" "$($global:DomainSid)-1205" '杜約翰')
+Add-FakeAD (New-FakeADObject group 'VPN-Users' 'VPN-Users' "CN=VPN-Users,$ou" "$($global:DomainSid)-1105")
+Add-FakeAD (New-FakeADObject group 'Domain Users' 'Domain Users' 'CN=Domain Users,CN=Users,DC=corp,DC=local' "$($global:DomainSid)-513")
+Add-FakeAD (New-FakeADObject group 'Domain Computers' 'Domain Computers' 'CN=Domain Computers,CN=Users,DC=corp,DC=local' "$($global:DomainSid)-515")
+Add-FakeAD (New-FakeADObject group 'Domain Controllers' 'Domain Controllers' 'CN=Domain Controllers,CN=Users,DC=corp,DC=local' "$($global:DomainSid)-516")
 Add-FakeAD (New-FakeADObject computer 'PC01$' 'PC01' "CN=PC01,OU=Computers,DC=corp,DC=local" "$($global:DomainSid)-2001")
+Add-FakeAD (New-FakeADObject computer 'PC02$' 'PC02' "CN=PC02,OU=Computers,DC=corp,DC=local" "$($global:DomainSid)-2002")
+Add-FakeAD (New-FakeADObject computer 'DC01$' 'DC01' "CN=DC01,OU=Domain Controllers,DC=corp,DC=local" "$($global:DomainSid)-1000")
 
 $global:GroupMembers = @{
     "CN=Finance-RW,$ou"       = @("CN=Alice Wang,$uou", "CN=Bob Lin,$uou", "CN=Finance-Managers,$ou")
     "CN=Finance-Managers,$ou" = @("CN=Carol Chen,$uou", "CN=Alice Wang,$uou", "CN=Finance-RW,$ou")   # 含循環
     "CN=Finance-RO,$ou"       = @("CN=Dave Wu,$uou", "CN=PC01,OU=Computers,DC=corp,DC=local")
     "CN=Interns,$ou"          = @()
+    "CN=VPN-Users,$ou"        = @("CN=Alice Wang,$uou")
+}
+$global:ComputerDetails = @{
+    'PC01' = @{ OperatingSystem = 'Windows 11 企業版'; Enabled = $true; LastLogonDate = (Get-Date).AddDays(-2); IPv4Address = '10.0.0.11'; Description = '財務部 王小美'; Primary = 'CN=Domain Computers,CN=Users,DC=corp,DC=local' }
+    'PC02' = @{ OperatingSystem = 'Windows 10 專業版'; Enabled = $false; LastLogonDate = (Get-Date).AddDays(-300); IPv4Address = $null; Description = '已報廢'; Primary = 'CN=Domain Computers,CN=Users,DC=corp,DC=local' }
+    'DC01' = @{ OperatingSystem = 'Windows Server 2022'; Enabled = $true; LastLogonDate = (Get-Date).AddDays(-1); IPv4Address = '10.0.0.1'; Description = ''; Primary = 'CN=Domain Controllers,CN=Users,DC=corp,DC=local' }
 }
 
 $global:TestNow = Get-Date
 $global:UserDetails = @{
-    'alice' = @{ Department = '財務部'; Title = '專員'; mail = 'alice@corp.local'; telephoneNumber = '#101'; Enabled = $true; LockedOut = $false; PasswordExpired = $false; LastLogonDate = $global:TestNow.AddDays(-1); Groups = @('Finance-RW', 'Finance-Managers') }
+    'alice' = @{ Department = '財務部'; Title = '專員'; mail = 'alice@corp.local'; telephoneNumber = '#101'; Enabled = $true; LockedOut = $false; PasswordExpired = $false; LastLogonDate = $global:TestNow.AddDays(-1); Groups = @('Finance-RW', 'Finance-Managers', 'VPN-Users'); Manager = "CN=Carol Chen,$uou" }
     'bob'   = @{ Department = '財務部'; Title = '組長'; mail = 'bob@corp.local'; telephoneNumber = '#102'; Enabled = $true; LockedOut = $true; PasswordExpired = $true; LastLogonDate = $global:TestNow.AddDays(-3); Groups = @('Finance-RW') }
     'carol' = @{ Department = '會計部'; Title = '經理'; mail = 'carol@corp.local'; telephoneNumber = '#103'; Enabled = $true; LockedOut = $false; PasswordExpired = $false; LastLogonDate = $global:TestNow.AddDays(-200); Groups = @('Finance-Managers', 'Finance-RW') }
     'dave'  = @{ Department = '稽核室'; Title = '稽核'; mail = 'dave@corp.local'; telephoneNumber = '#104'; Enabled = $false; LockedOut = $false; PasswordExpired = $false; LastLogonDate = $global:TestNow.AddDays(-400); Groups = @('Finance-RO') }
@@ -119,6 +131,60 @@ function Get-FakeADUser {
         SID = $o.objectSid; Department = $d.Department; Title = $d.Title; mail = $d.mail; telephoneNumber = $d.telephoneNumber; Office = ''
         Enabled = $d.Enabled; LockedOut = $d.LockedOut; PasswordExpired = $d.PasswordExpired; PasswordNeverExpires = $false
         PasswordLastSet = $global:TestNow.AddDays(-30); LastLogonDate = $d.LastLogonDate; tokenGroups = $groupSids
+        UserPrincipalName = "$($o.sAMAccountName)@corp.local"; EmployeeID = ''; Company = '範例公司'; mobile = ''
+        Manager = $d.Manager; AccountExpirationDate = $null; whenCreated = $global:TestNow.AddDays(-700); Description = ''
+        MemberOf = @(Get-FakeMemberOf $o.distinguishedName); PrimaryGroup = 'CN=Domain Users,CN=Users,DC=corp,DC=local'
+    }
+}
+
+function Get-FakeMemberOf {
+    # 反查：哪些群組的成員包含這個 DN（模擬 memberOf 屬性）
+    param([string]$Dn)
+    @(foreach ($g in $global:GroupMembers.Keys) { if (@($global:GroupMembers[$g]) -contains $Dn) { $g } })
+}
+
+function Get-FakeADGroup {
+    param([string]$Identity)
+    $o = Find-FakeAD $Identity
+    if (-not $o -or @($o.objectClass)[-1] -ne 'group') { throw "Cannot find an object with identity: '$Identity'" }
+    [pscustomobject]@{
+        Name = $o.name; SamAccountName = $o.sAMAccountName; DistinguishedName = $o.distinguishedName; SID = $o.objectSid
+        GroupCategory = if ($o.name -eq 'VPN-Users') { 'Distribution' } else { 'Security' }
+        GroupScope = if ($o.name -eq 'Domain Users') { 'Global' } else { 'DomainLocal' }
+        Description = "$($o.name) 的描述"
+        member = @($global:GroupMembers[$o.distinguishedName]); MemberOf = @(Get-FakeMemberOf $o.distinguishedName)
+    }
+}
+
+function Get-FakeADComputer {
+    param([string]$Identity)
+    $o = Find-FakeAD $Identity
+    if (-not $o) { $o = Find-FakeAD "$Identity`$" }
+    if (-not $o -or @($o.objectClass)[-1] -ne 'computer') { throw "Cannot find an object with identity: '$Identity'" }
+    $d = $global:ComputerDetails[$o.name]
+    [pscustomobject]@{
+        Name = $o.name; SamAccountName = $o.sAMAccountName; DistinguishedName = $o.distinguishedName; SID = $o.objectSid
+        DNSHostName = "$($o.name).corp.local".ToLower(); OperatingSystem = $d.OperatingSystem; OperatingSystemVersion = '10.0'
+        IPv4Address = $d.IPv4Address; LastLogonDate = $d.LastLogonDate; Enabled = $d.Enabled; Description = $d.Description
+        whenCreated = $global:TestNow.AddDays(-500); PasswordLastSet = $global:TestNow.AddDays(-10); ManagedBy = $null; Location = ''
+        MemberOf = @(Get-FakeMemberOf $o.distinguishedName); PrimaryGroup = $d.Primary
+    }
+}
+
+function Search-FakeAD {
+    # 模擬 -Filter "... -like '*關鍵字*' ..."：取出關鍵字，比對該類別物件的常用欄位
+    param([string]$Class, [string]$Filter)
+    if ($Filter -notmatch "-like '\*((?:[^']|'')*)\*'") { return @() }
+    $kw = $Matches[1] -replace "''", "'"
+    foreach ($o in @($global:FakeAD.Values | Sort-Object name)) {
+        if (@($o.objectClass)[-1] -ne $Class) { continue }
+        $detail = switch ($Class) {
+            'user'     { Get-FakeADUser $o.distinguishedName }
+            'group'    { Get-FakeADGroup $o.distinguishedName }
+            'computer' { Get-FakeADComputer $o.distinguishedName }
+        }
+        $text = @($detail.SamAccountName, $detail.Name, $detail.DisplayName, $detail.mail, $detail.Department, $detail.Title, $detail.Description, $detail.DNSHostName) -join '|'
+        if ($text.IndexOf($kw, [System.StringComparison]::OrdinalIgnoreCase) -ge 0) { $detail }
     }
 }
 

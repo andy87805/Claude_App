@@ -85,7 +85,7 @@ Describe '啟動腳本：<Variant>' -ForEach $Variants {
         $dir = New-LauncherCopy -Kind $Kind
         $r = Invoke-Launcher -Dir $dir
         $r.Text | Should -Not -Match 'ParserError|UnexpectedAttribute|未預期|Unexpected'
-        $r.Text | Should -Match '資料夾權限查詢工具（唯讀，不會修改 AD）'
+        $r.Text | Should -Match 'AD 權限查詢工具（唯讀，不會修改 AD）'
         $r.Text | Should -Match '找不到 ActiveDirectory 模組'
         $r.Text | Should -Not -Match 'broken characters'
         $r.ExitCode | Should -Be 0
@@ -96,7 +96,7 @@ Describe '啟動腳本：模組檔被存成 Big5（記事本選 ANSI）' {
     It '在繁體中文 Windows 上改用 ANSI 編碼讀取' {
         $dir = New-LauncherCopy -Kind 'big5'
         $r = Invoke-Launcher -Dir $dir -Culture 'zh-TW'
-        $r.Text | Should -Match '資料夾權限查詢工具（唯讀，不會修改 AD）'
+        $r.Text | Should -Match 'AD 權限查詢工具（唯讀，不會修改 AD）'
         $r.Text | Should -Match '找不到 ActiveDirectory 模組'
     }
 }

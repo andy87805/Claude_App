@@ -24,7 +24,7 @@ Describe '唯讀檢查：<Name>' -ForEach $Files {
         # 允許使用的指令清單：全部都是「查詢 / 顯示 / 本機檔案輸出」類
         $script:Allowed = @(
             # AD：只允許 Get
-            'Get-ADObject', 'Get-ADUser', 'Get-ADGroup', 'Get-ADGroupMember'
+            'Get-ADObject', 'Get-ADUser', 'Get-ADGroup', 'Get-ADGroupMember', 'Get-ADComputer'
             # 檔案系統：只讀
             'Get-Acl', 'Get-ChildItem', 'Test-Path', 'Join-Path', 'Split-Path', 'Resolve-Path', 'Get-Location'
             # 本機輸出（log 與報表）
