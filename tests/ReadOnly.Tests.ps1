@@ -17,7 +17,9 @@ Describe '唯讀檢查：<Name>' -ForEach $Files {
         $script:CommandNames = @($Commands | ForEach-Object { $_.GetCommandName() } | Where-Object { $_ } | Sort-Object -Unique)
         # 本工具自己定義的函式（一律以模組檔為準，啟動腳本會呼叫它們）
         $moduleAst = [System.Management.Automation.Language.Parser]::ParseFile((Join-Path $PSScriptRoot '..' 'ADPermissionQuery.psm1'), [ref]$null, [ref]$null)
-        $script:Functions = @($moduleAst.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] }, $true) | ForEach-Object Name)
+        $script:Functions = @(@($moduleAst, $Ast) | ForEach-Object {
+                $_.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] }, $true)
+            } | ForEach-Object Name | Sort-Object -Unique)
 
         # 允許使用的指令清單：全部都是「查詢 / 顯示 / 本機檔案輸出」類
         $script:Allowed = @(
@@ -28,9 +30,9 @@ Describe '唯讀檢查：<Name>' -ForEach $Files {
             # 本機輸出（log 與報表）
             'New-Item', 'Add-Content', 'Export-Csv', 'Out-File', 'ConvertTo-Html'
             # 一般
-            'Get-Command', 'Get-Module', 'Import-Module', 'Export-ModuleMember', 'Get-Date', 'New-Object',
+            'Get-Command', 'Get-Module', 'Import-Module', 'New-Module', 'Export-ModuleMember', 'Get-Date', 'New-Object',
             'Select-Object', 'Where-Object', 'ForEach-Object', 'Sort-Object', 'Format-Table', 'Out-String', 'Out-Null',
-            'Out-GridView', 'Write-Host', 'Write-Warning', 'Write-Verbose', 'Write-Progress', 'Read-Host'
+            'Out-GridView', 'Write-Host', 'Write-Warning', 'Write-Verbose', 'Write-Error', 'Write-Progress', 'Read-Host'
         )
     }
 
@@ -51,7 +53,7 @@ Describe '唯讀檢查：<Name>' -ForEach $Files {
     It '不使用任何會異動的指令' {
         $bad = @($CommandNames | Where-Object {
                 $_ -match '^(Set|Add|Remove|New|Clear|Move|Rename|Enable|Disable|Unlock|Grant|Revoke|Reset|Restore|Install|Uninstall)-' -and
-                $_ -notin @('New-Item', 'Add-Content', 'New-Object') -and $_ -notin $Functions
+                $_ -notin @('New-Item', 'Add-Content', 'New-Object', 'New-Module') -and $_ -notin $Functions
             })
         $bad | Should -BeNullOrEmpty
         $CommandNames | Should -Not -Contain 'Set-Acl'
@@ -87,8 +89,17 @@ Describe '唯讀檢查：<Name>' -ForEach $Files {
         }
     }
 
-    It '檔案為 UTF-8 with BOM（Windows PowerShell 5.1 才能正確讀取中文）' {
+    It '檔案編碼：啟動腳本只含 ASCII；模組為 UTF-8 with BOM' {
         $bytes = [System.IO.File]::ReadAllBytes($File)
-        $bytes[0..2] | Should -Be @(0xEF, 0xBB, 0xBF)
+        if ($Name -eq 'Start-ADPermissionQuery.ps1') {
+            # 純 ASCII：不論用什麼方式下載、存檔（有無 BOM、UTF-8 / ANSI）都能正確解析
+            @($bytes | Where-Object { $_ -ge 0x80 }).Count | Should -Be 0
+        }
+        else {
+            # BOM 讓直接 Import-Module 的 Windows PowerShell 5.1 也能正確讀中文
+            $bytes[0..2] | Should -Be @(0xEF, 0xBB, 0xBF)
+            $strict = New-Object System.Text.UTF8Encoding($false, $true)
+            { $strict.GetString($bytes) } | Should -Not -Throw
+        }
     }
 }

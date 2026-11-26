@@ -1,40 +1,40 @@
-﻿#Requires -Version 5.1
+#Requires -Version 5.1
 <#
 .SYNOPSIS
-    資料夾 / 共用路徑權限查詢工具（AD 環境用，全程唯讀）。
+    Folder / share permission query tool for Active Directory (READ-ONLY).
 
 .DESCRIPTION
-    1. 輸入資料夾路徑（本機或 \\server\share\...）
-    2. 列出有哪些人員、群組有權限（權限種類、允許/拒絕、套用範圍、是否繼承）
-    3. 選擇群組 → 列出成員（姓名、帳號、部門、職稱、Email、帳號狀態、最後登入…）
-    其他功能：巢狀群組展開、反查使用者權限、子資料夾權限差異掃描、關鍵字篩選、
-             匯出 CSV / HTML、查詢紀錄 log。
+    Enter a folder or UNC path, list who has permissions, pick a group and list its members.
+    This tool only READS AD and NTFS permissions. It never creates, changes or deletes anything in AD.
+    See README.md for the full (Traditional Chinese) documentation.
 
-    本工具只會「讀取」AD 與 NTFS 權限，不會新增、修改或刪除任何 AD 物件或權限。
+    NOTE: This launcher is intentionally plain ASCII so that it works no matter how the file was
+    downloaded or saved (with / without BOM, UTF-8 / ANSI). It loads ADPermissionQuery.psm1 by
+    reading it as UTF-8 itself, so the module file also works with or without a BOM.
 
 .PARAMETER Path
-    直接指定要查詢的路徑（不指定會在啟動後詢問）。
+    Path to query. If omitted, you will be asked after start-up.
 
 .PARAMETER Server
-    指定要查詢的網域控制站或網域（例如 dc01.corp.local），不指定則自動尋找。
+    Domain controller or domain to query (e.g. dc01.corp.local). Auto-detected if omitted.
 
 .PARAMETER InactiveDays
-    超過幾天未登入就標示為「久未登入」，預設 90。
+    Mark accounts that have not logged on for more than N days. Default 90.
 
 .PARAMETER LogPath
-    查詢紀錄檔位置，預設 %LOCALAPPDATA%\ADPermissionQuery\query.log。
+    Query log file. Default %LOCALAPPDATA%\ADPermissionQuery\query.log
 
 .PARAMETER NoLog
-    不寫查詢紀錄。
+    Do not write the query log.
 
 .PARAMETER NoGui
-    不使用 Out-GridView 視窗，全部用文字選單（適合 Server Core / 遠端工作階段）。
+    Do not use Out-GridView windows; text menus only (Server Core / remote sessions).
 
 .EXAMPLE
     .\Start-ADPermissionQuery.ps1
 
 .EXAMPLE
-    .\Start-ADPermissionQuery.ps1 -Path '\\fileserver\share\財務部' -InactiveDays 60
+    .\Start-ADPermissionQuery.ps1 -Path '\\fileserver\share\Finance' -InactiveDays 60
 #>
 [CmdletBinding()]
 param(
@@ -47,18 +47,52 @@ param(
 )
 
 $ErrorActionPreference = 'Continue'
-try {
-    # 讓主控台正確顯示中文
-    [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+
+function Read-ModuleSource {
+    # Read the module file as text, independent of how it was saved:
+    #   UTF-8 with BOM, UTF-8 without BOM, duplicated BOM, or ANSI (e.g. Big5 saved by Notepad).
+    param([Parameter(Mandatory)][string]$File)
+
+    $bytes = [System.IO.File]::ReadAllBytes($File)
+    $strictUtf8 = New-Object System.Text.UTF8Encoding($false, $true)
+    try {
+        $text = $strictUtf8.GetString($bytes)
+    }
+    catch {
+        # Not valid UTF-8: the file was saved in the system ANSI code page.
+        $cp = [System.Globalization.CultureInfo]::CurrentCulture.TextInfo.ANSICodePage
+        Write-Verbose "Module file is not UTF-8, decoding with ANSI code page $cp."
+        $text = [System.Text.Encoding]::GetEncoding($cp).GetString($bytes)
+    }
+
+    # Strip any leading BOM characters, including a BOM that was turned into text
+    # (U+FEFF, or the three characters EF BB BF shown as Latin-1).
+    $mojibakeBom = [string]::new([char[]](0xEF, 0xBB, 0xBF))
+    $changed = $true
+    while ($changed) {
+        $changed = $false
+        if ($text.Length -gt 0 -and $text[0] -eq [char]0xFEFF) { $text = $text.Substring(1); $changed = $true }
+        elseif ($text.StartsWith($mojibakeBom)) { $text = $text.Substring(3); $changed = $true }
+    }
+    if ($text.IndexOf([char]0xFFFD) -ge 0) {
+        Write-Warning 'ADPermissionQuery.psm1 contains broken characters; Chinese text may be garbled. Please re-download the file (see README).'
+    }
+    # '#Requires' is already declared by this launcher.
+    return ($text -replace '(?m)^\s*#Requires[^\r\n]*', '')
 }
-catch {
-    Write-Verbose "無法設定主控台編碼（不影響查詢）：$($_.Exception.Message)"
+
+$modulePath = Join-Path $PSScriptRoot 'ADPermissionQuery.psm1'
+if (-not (Test-Path -LiteralPath $modulePath)) {
+    Write-Error "Cannot find ADPermissionQuery.psm1. Put it in the same folder as this script: $PSScriptRoot"
+    return
 }
 
 if (Get-Module -ListAvailable -Name ActiveDirectory) {
     Import-Module ActiveDirectory -ErrorAction SilentlyContinue
 }
-Import-Module (Join-Path $PSScriptRoot 'ADPermissionQuery.psm1') -Force
+
+$source = Read-ModuleSource -File $modulePath
+New-Module -Name ADPermissionQuery -ScriptBlock ([scriptblock]::Create($source)) | Import-Module -Force
 
 $opt = @{ InactiveDays = $InactiveDays; NoLog = $NoLog; NoGui = $NoGui }
 if ($Server)  { $opt['Server'] = $Server }

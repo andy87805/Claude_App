@@ -38,6 +38,8 @@
 ## 使用方式
 
 1. 下載這個分支的檔案，把 `ADPermissionQuery.psm1` 和 `Start-ADPermissionQuery.ps1` 放在同一個資料夾。
+   建議在 GitHub 分支頁面按「Code → Download ZIP」解壓縮，或開啟檔案後按右上角的下載按鈕（Download raw file）。
+   用複製貼上存檔也可以，啟動腳本會自動處理編碼。
 2. 開啟 PowerShell，切到該資料夾並執行：
 
    ```powershell
@@ -110,6 +112,15 @@ Get-SubfolderPermissionDiff -Path '\\fs01\share\Finance' -Depth 3
 
 ---
 
+## 疑難排解
+
+| 狀況 | 處理方式 |
+| --- | --- |
+| `未預期的屬性 'CmdletBinding'`、`運算式或陳述式中有未預期的 'param' 語彙基元` | 舊版啟動腳本在檔案開頭多了看不見的 BOM 字元（常見於從網頁複製貼上後存檔）。請重新下載最新的 `Start-ADPermissionQuery.ps1`；新版是純英文 ASCII 檔，不會再發生 |
+| 「因為這個系統上已停用指令碼執行，所以無法載入」 | 先執行 `Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass`（只對目前視窗有效） |
+| 「找不到 ActiveDirectory 模組」 | 安裝 RSAT 的 Active Directory 模組（見上方「需求」） |
+| 中文顯示成亂碼 | 重新下載 `ADPermissionQuery.psm1`；若用記事本存檔，請選「UTF-8」編碼 |
+
 ## 測試
 
 測試使用 [Pester 5](https://pester.dev)，**全部使用假的 AD 與 ACL 資料（Mock），不會連到任何 AD**，可以在任何電腦上執行：
@@ -121,3 +132,4 @@ Invoke-Pester -Path .\tests -Output Detailed
 
 - `tests\ADPermissionQuery.Tests.ps1`：各項功能與完整互動流程（模擬使用者輸入）
 - `tests\ReadOnly.Tests.ps1`：靜態掃描程式碼，確認只用查詢類指令、不呼叫修改 ACL / AD 的方法、寫檔只限 log 與報表
+- `tests\Launcher.Tests.ps1`：模擬各種下載 / 存檔方式（有無 BOM、BOM 重複、CRLF、Big5），確認啟動腳本都能正常載入
