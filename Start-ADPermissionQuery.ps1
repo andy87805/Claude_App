@@ -48,21 +48,48 @@ param(
 
 $ErrorActionPreference = 'Continue'
 
+function Get-TextEncodingName {
+    # Detect how the module file was saved:
+    #   UTF-8 (with / without BOM), UTF-16 LE / BE (with / without BOM; e.g. Windows PowerShell 5.1
+    #   "> file" / Out-File, or Notepad "Unicode"), otherwise the system ANSI code page (e.g. Big5).
+    param([byte[]]$Bytes)
+    $n = $Bytes.Length
+    if ($n -ge 3 -and $Bytes[0] -eq 0xEF -and $Bytes[1] -eq 0xBB -and $Bytes[2] -eq 0xBF) { return 'utf8' }
+    if ($n -ge 2 -and $Bytes[0] -eq 0xFF -and $Bytes[1] -eq 0xFE) { return 'utf16le' }
+    if ($n -ge 2 -and $Bytes[0] -eq 0xFE -and $Bytes[1] -eq 0xFF) { return 'utf16be' }
+
+    # No BOM: UTF-16 text has many 0x00 bytes (the high byte of every ASCII character).
+    $sample = [Math]::Min($n, 4096)
+    $evenZero = 0; $oddZero = 0
+    for ($i = 0; $i -lt $sample; $i++) {
+        if ($Bytes[$i] -eq 0) { if ($i % 2 -eq 0) { $evenZero++ } else { $oddZero++ } }
+    }
+    if ($sample -gt 0) {
+        if ($oddZero -gt $sample * 0.2 -and $oddZero -gt $evenZero * 4) { return 'utf16le' }
+        if ($evenZero -gt $sample * 0.2 -and $evenZero -gt $oddZero * 4) { return 'utf16be' }
+    }
+
+    $strictUtf8 = New-Object System.Text.UTF8Encoding($false, $true)
+    try { [void]$strictUtf8.GetString($Bytes); return 'utf8' } catch { return 'ansi' }
+}
+
 function Read-ModuleSource {
-    # Read the module file as text, independent of how it was saved:
-    #   UTF-8 with BOM, UTF-8 without BOM, duplicated BOM, or ANSI (e.g. Big5 saved by Notepad).
+    # Read the module file as text, independent of how it was saved (see Get-TextEncodingName),
+    # and strip duplicated BOMs.
     param([Parameter(Mandatory)][string]$File)
 
     $bytes = [System.IO.File]::ReadAllBytes($File)
-    $strictUtf8 = New-Object System.Text.UTF8Encoding($false, $true)
-    try {
-        $text = $strictUtf8.GetString($bytes)
-    }
-    catch {
-        # Not valid UTF-8: the file was saved in the system ANSI code page.
-        $cp = [System.Globalization.CultureInfo]::CurrentCulture.TextInfo.ANSICodePage
-        Write-Verbose "Module file is not UTF-8, decoding with ANSI code page $cp."
-        $text = [System.Text.Encoding]::GetEncoding($cp).GetString($bytes)
+    $kind = Get-TextEncodingName -Bytes $bytes
+    Write-Verbose "ADPermissionQuery.psm1 encoding: $kind"
+    switch ($kind) {
+        'utf8'    { $text = (New-Object System.Text.UTF8Encoding($false)).GetString($bytes) }
+        'utf16le' { $text = [System.Text.Encoding]::Unicode.GetString($bytes) }
+        'utf16be' { $text = [System.Text.Encoding]::BigEndianUnicode.GetString($bytes) }
+        default {
+            $cp = [System.Globalization.CultureInfo]::CurrentCulture.TextInfo.ANSICodePage
+            $text = [System.Text.Encoding]::GetEncoding($cp).GetString($bytes)
+            $kind = "ansi (code page $cp)"
+        }
     }
 
     # Strip any leading BOM characters, including a BOM that was turned into text
@@ -78,7 +105,10 @@ function Read-ModuleSource {
         Write-Warning 'ADPermissionQuery.psm1 contains broken characters; Chinese text may be garbled. Please re-download the file (see README).'
     }
     # '#Requires' is already declared by this launcher.
-    return ($text -replace '(?m)^\s*#Requires[^\r\n]*', '')
+    [pscustomobject]@{
+        Text     = ($text -replace '(?m)^\s*#Requires[^\r\n]*', '')
+        Encoding = $kind
+    }
 }
 
 $modulePath = Join-Path $PSScriptRoot 'ADPermissionQuery.psm1'
@@ -92,7 +122,18 @@ if (Get-Module -ListAvailable -Name ActiveDirectory) {
 }
 
 $source = Read-ModuleSource -File $modulePath
-New-Module -Name ADPermissionQuery -ScriptBlock ([scriptblock]::Create($source)) | Import-Module -Force
+
+# Check the module text first, so a damaged file gives one clear message instead of many parse errors.
+$parseErrors = $null
+[void][System.Management.Automation.Language.Parser]::ParseInput($source.Text, [ref]$null, [ref]$parseErrors)
+if ($parseErrors -and $parseErrors.Count -gt 0) {
+    $msg = ("ADPermissionQuery.psm1 could not be read correctly (detected encoding: {0}; first error at line {1}: {2}) " +
+        "The file is probably damaged. Please download it again (GitHub: Code > Download ZIP, or the 'Download raw file' button) " +
+        "and do not convert or re-save it.") -f $source.Encoding, $parseErrors[0].Extent.StartLineNumber, $parseErrors[0].Message
+    Write-Error $msg
+    return
+}
+New-Module -Name ADPermissionQuery -ScriptBlock ([scriptblock]::Create($source.Text)) | Import-Module -Force
 
 $opt = @{ InactiveDays = $InactiveDays; NoLog = $NoLog; NoGui = $NoGui }
 if ($Server)  { $opt['Server'] = $Server }

@@ -117,6 +117,8 @@ Get-SubfolderPermissionDiff -Path '\\fs01\share\Finance' -Depth 3
 | 狀況 | 處理方式 |
 | --- | --- |
 | `未預期的屬性 'CmdletBinding'`、`運算式或陳述式中有未預期的 'param' 語彙基元` | 舊版啟動腳本在檔案開頭多了看不見的 BOM 字元（常見於從網頁複製貼上後存檔）。請重新下載最新的 `Start-ADPermissionQuery.ps1`；新版是純英文 ASCII 檔，不會再發生 |
+| `以 "1" 引數呼叫 "Create" 時發生例外狀況`，後面接一堆亂碼與剖析錯誤 | 舊版啟動腳本無法讀取存成 UTF-16（Unicode）的模組檔（例如用 Windows PowerShell 的 `>`、`Out-File` 或記事本「Unicode」存檔）。請重新下載最新的 `Start-ADPermissionQuery.ps1`，新版會自動判斷 UTF-8 / UTF-16 / ANSI |
+| `ADPermissionQuery.psm1 could not be read correctly` | 模組檔內容已損壞（通常是用錯誤的編碼開啟後又存檔），請重新下載 `ADPermissionQuery.psm1`，不要轉檔或另存 |
 | 「因為這個系統上已停用指令碼執行，所以無法載入」 | 先執行 `Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass`（只對目前視窗有效） |
 | 「找不到 ActiveDirectory 模組」 | 安裝 RSAT 的 Active Directory 模組（見上方「需求」） |
 | 中文顯示成亂碼 | 重新下載 `ADPermissionQuery.psm1`；若用記事本存檔，請選「UTF-8」編碼 |
@@ -132,4 +134,4 @@ Invoke-Pester -Path .\tests -Output Detailed
 
 - `tests\ADPermissionQuery.Tests.ps1`：各項功能與完整互動流程（模擬使用者輸入）
 - `tests\ReadOnly.Tests.ps1`：靜態掃描程式碼，確認只用查詢類指令、不呼叫修改 ACL / AD 的方法、寫檔只限 log 與報表
-- `tests\Launcher.Tests.ps1`：模擬各種下載 / 存檔方式（有無 BOM、BOM 重複、CRLF、Big5），確認啟動腳本都能正常載入
+- `tests\Launcher.Tests.ps1`：模擬各種下載 / 存檔方式（有無 BOM、BOM 重複、CRLF、UTF-16LE/BE、Big5、已損壞），確認啟動腳本都能正常載入或清楚說明
