@@ -364,46 +364,52 @@ function New-SheetXml {
 function New-ImportTemplate {
     <#
     .SYNOPSIS
-        產生批次匯入用的 Excel 範本（.xlsx），含「群組」「使用者」「群組成員」「移除成員」「說明」工作表。
+        產生批次匯入用的空白 Excel 範本（.xlsx）：「群組」「使用者」「群組成員」「移除成員」「搬移」只有標題列，
+        「說明」工作表說明各欄位的填法。不會讀取或寫入任何網域資訊。
     #>
     [CmdletBinding()]
-    param([Parameter(Mandatory)][string]$Path, [string]$DomainDN = 'DC=corp,DC=local')
-    Add-Type -AssemblyName System.IO.Compression -ErrorAction SilentlyContinue
-    Add-Type -AssemblyName System.IO.Compression.FileSystem -ErrorAction SilentlyContinue
-
+    param([Parameter(Mandatory)][string]$Path)
     $sheets = @(
         @{ Name = '群組'; Header = @('群組名稱*', '帳號', 'OU*', '範圍', '類型', '顯示名稱', '描述', '附註', '成員', '加入到群組')
-            Widths = @(22, 18, 34, 10, 10, 18, 26, 26, 26, 22)
-            Rows = @(, @('財務部-檔案讀寫', 'FIN-FS-RW', "OU=Groups,$DomainDN", '網域本機', '安全性', '', '財務部共用資料夾讀寫', '申請單 2026-001', 'alice;bob', '')) }
+            Widths = @(22, 18, 34, 10, 10, 18, 26, 26, 26, 22); Rows = @() }
         @{ Name = '使用者'; Header = @('帳號*', '姓', '名', '顯示名稱', 'OU*', 'UPN', 'Email', '部門', '職稱', '公司', '辦公室', '電話', '手機', '員工編號', '主管', '描述', '附註', '帳號到期日', '啟用', '加入群組')
-            Widths = @(14, 8, 10, 14, 34, 24, 24, 12, 12, 12, 10, 12, 14, 12, 12, 20, 20, 14, 8, 24)
-            Rows = @(, @('wang.dm', '王', '大明', '王大明', "OU=Users,$DomainDN", '', 'wang.dm@example.com', '財務部', '專員', '', '', '#1234', '', 'E1001', 'alice', '新進人員', '到職日 2026-12-01', '', '是', 'FIN-FS-RW')) }
-        @{ Name = '群組成員'; Header = @('群組*', '成員*'); Widths = @(26, 26); Rows = @(@('FIN-FS-RW', 'carol'), @('FIN-FS-RW', 'PC01')) }
-        @{ Name = '移除成員'; Header = @('群組*', '成員*'); Widths = @(26, 26); Rows = @(, @('Old-Project-Team', 'dave')) }
-        @{ Name = '搬移'; Header = @('物件*', '目前 OU', '目標 OU*'); Widths = @(24, 30, 34)
-            Rows = @(@('chen.xm', '台北/業務部', '台北/財務部/帳號'), @('PC-FIN-01', '', '台北/財務部/電腦')) }
+            Widths = @(14, 8, 10, 14, 34, 24, 24, 12, 12, 12, 10, 12, 14, 12, 12, 20, 20, 14, 8, 24); Rows = @() }
+        @{ Name = '群組成員'; Header = @('群組*', '成員*'); Widths = @(26, 26); Rows = @() }
+        @{ Name = '移除成員'; Header = @('群組*', '成員*'); Widths = @(26, 26); Rows = @() }
+        @{ Name = '搬移'; Header = @('物件*', '目前 OU', '目標 OU*'); Widths = @(24, 30, 34); Rows = @() }
         @{ Name = '說明'; Header = @('項目', '說明'); Widths = @(18, 100)
             Rows = @(
-                , @('使用方式', '在要用的工作表填資料（第 1 列標題不要改），不需要的工作表可以刪除或留空。匯入時會先預覽，確認後輸入 YES 才會執行。')
+                , @('使用方式', '在要用的工作表從第 2 列開始填資料（第 1 列標題不要改），不需要的工作表可以刪除或留空。匯入時會先預覽，確認後輸入 YES 才會執行。')
                 , @('必填欄位', '標題有 * 的欄位必填。OU 空白時，匯入時可以指定一個預設 OU。')
-                , @('OU', '可以用 / 分隔，由上往下寫（和 AD 樹狀圖相同），例如 台北/財務部/帳號；也可以填完整的 DN，例如 OU=帳號,OU=財務部,OU=台北,' + $DomainDN)
+                , @('OU', '可以用 / 分隔，由上往下寫（和 AD 樹狀圖相同），例如 台北/財務部/帳號；也可以填完整的 DN，例如 OU=帳號,OU=財務部,OU=台北,DC=example,DC=com')
                 , @('群組 範圍', '全域 / 網域本機 / 萬用（空白 = 全域）')
                 , @('群組 類型', '安全性 / 發佈（空白 = 安全性）')
+                , @('描述 / 附註', '會寫入 AD 物件的「描述」與「附註」欄位，可以空白')
                 , @('成員 / 加入群組', '可填多個帳號或群組，用 ; 或 , 分隔。成員可以是使用者、群組或電腦（電腦填名稱即可）。')
                 , @('使用者 帳號', '最多 20 個字元，不能包含 " / \ [ ] : ; | = , + * ? < > @')
                 , @('顯示名稱', '空白時使用「姓 + 名」')
                 , @('UPN', '空白時使用「帳號@網域」')
                 , @('主管', '填主管的帳號；主管若也是這次新增的人，必須排在前面的列')
-                , @('帳號到期日', '格式 2026-12-31，表示可以使用到當天結束')
+                , @('帳號到期日', '格式例如 2026-12-31，表示可以使用到當天結束；空白 = 永不到期')
                 , @('啟用', '是 / 否（空白 = 是）')
                 , @('初始密碼', '匯入時輸入一組共用的初始密碼（不會存在任何檔案），使用者第一次登入時必須變更')
                 , @('已存在的物件', '群組或帳號已存在時會略過，不會修改既有物件；但仍會處理該列要加入的成員 / 群組')
+                , @('群組成員 / 移除成員', '每一列填一個群組和一個成員')
                 , @('搬移 物件', '填帳號（電腦可以只填名稱）、名稱或 DN；可以搬移使用者、群組、電腦')
                 , @('搬移 目前 OU', '可以空白。有填但物件不在這個 OU 時，會自動查出實際位置，並詢問你要不要照實際位置搬移')
-                , @('搬移 目標 OU', '要搬到哪個 OU，寫法和其他 OU 欄位相同（例如 台北/財務部/帳號）')
+                , @('搬移 目標 OU', '要搬到哪個 OU，寫法和其他 OU 欄位相同')
             ) }
     )
+    New-XlsxWorkbook -Path $Path -Sheets $sheets
+    Write-QueryLog -Action '產生匯入範本' -Target $Path
+    return $Path
+}
 
+function New-XlsxWorkbook {
+    <# 寫出 .xlsx（每個工作表：Name、Header、Rows、Widths；第 1 列為粗體標題並凍結） #>
+    param([Parameter(Mandatory)][string]$Path, [Parameter(Mandatory)][object[]]$Sheets)
+    Add-Type -AssemblyName System.IO.Compression -ErrorAction SilentlyContinue
+    Add-Type -AssemblyName System.IO.Compression.FileSystem -ErrorAction SilentlyContinue
     $dir = Split-Path -Path $Path -Parent
     if ($dir -and -not (Test-Path -LiteralPath $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
     $fs = [System.IO.File]::Open($Path, [System.IO.FileMode]::Create, [System.IO.FileAccess]::ReadWrite, [System.IO.FileShare]::None)
@@ -441,8 +447,6 @@ function New-ImportTemplate {
         $zip.Dispose()
         $fs.Dispose()
     }
-    Write-QueryLog -Action '產生匯入範本' -Target $Path
-    return $Path
 }
 
 # ---------------------------------------------------------------------------
@@ -1618,13 +1622,10 @@ function Invoke-TemplateMenu {
     if (-not $p) { $p = $def }
     if ([System.IO.Path]::GetExtension($p) -ne '.xlsx') { $p += '.xlsx' }
     if ((Test-Path -LiteralPath $p) -and -not (Read-YesNo -Prompt "檔案已存在，要覆蓋嗎？" -Default $false)) { return }
-    $dn = 'DC=corp,DC=local'
-    $srv = Get-ADServerParam
-    try { $dn = [string](Get-ADDomain @srv -ErrorAction Stop).DistinguishedName } catch { Write-Verbose '讀取網域名稱失敗，範本使用範例網域' }
     try {
-        $f = New-ImportTemplate -Path $p -DomainDN $dn
+        $f = New-ImportTemplate -Path $p
         Write-Status "已產生範本：$f" -Level Ok
-        Write-Status '範本中的範例資料請改成實際資料，不需要的列刪除即可。' -Level Hint
+        Write-Status '在各工作表從第 2 列開始填資料；各欄位的填法請看「說明」工作表。' -Level Hint
     }
     catch { Write-Status "產生範本失敗：$($_.Exception.Message)" -Level Error }
 }

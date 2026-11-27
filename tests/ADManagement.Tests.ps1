@@ -79,20 +79,33 @@ Describe 'ADManagement' {
     }
 
     Context '讀取 Excel / CSV' {
-        It '產生的範本是標準的 .xlsx，可以再讀回來' {
+        It '產生的範本是標準的 .xlsx：資料工作表只有標題列，沒有預設值' {
             $f = New-ImportTemplate -Path (Join-Path $TestDrive 'tpl.xlsx')
             $book = Import-Spreadsheet -Path $f
             @($book.Keys) | Should -Be @('群組', '使用者', '群組成員', '移除成員', '搬移', '說明')
-            $g = @($book['群組'])[0]
-            $g.'群組名稱*' | Should -Be '財務部-檔案讀寫'
-            $g.'OU*' | Should -Be 'OU=Groups,DC=corp,DC=local'
-            @($book['群組成員']).Count | Should -Be 2
+            foreach ($k in '群組', '使用者', '群組成員', '移除成員', '搬移') { @($book[$k]).Count | Should -Be 0 -Because "「$k」不應有預設資料" }
             @($book['說明']).Count | Should -BeGreaterThan 5
             if ($global:Python) {
-                $out = & $global:Python.Source -c "import openpyxl,sys; wb=openpyxl.load_workbook(sys.argv[1]); print('|'.join(wb.sheetnames)); print(wb['使用者']['A1'].value, wb['使用者']['A1'].font.b)" $f
+                $py = "import openpyxl,sys; wb=openpyxl.load_workbook(sys.argv[1]); print('|'.join(wb.sheetnames)); print(wb['使用者']['A1'].value, wb['使用者']['A1'].font.b); print(','.join(str(wb[n].max_row) for n in ['群組','使用者','群組成員','移除成員','搬移']))"
+                $out = & $global:Python.Source -c $py $f
                 $out[0] | Should -Be '群組|使用者|群組成員|移除成員|搬移|說明'
                 $out[1] | Should -Be '帳號* True'
+                $out[2] | Should -Be '1,1,1,1,1'
             }
+        }
+        It '範本的說明不含任何實際網域資訊，產生範本時也不會查詢 AD' {
+            Mock -ModuleName ADPermissionQuery Write-Host { }
+            Mock -ModuleName ADManagement Get-DefaultExportFolder { $TestDrive }
+            Mock -ModuleName ADPermissionQuery Read-Host { '' }
+            Mock -ModuleName ADManagement Get-ADDomain { [pscustomobject]@{ DNSRoot = 'cms.secret.local'; DistinguishedName = 'DC=cms,DC=secret,DC=local' } }
+            InModuleScope ADManagement { Invoke-TemplateMenu }
+            Should -Invoke -ModuleName ADManagement Get-ADDomain -Times 0 -Exactly
+            Should -Invoke -ModuleName ADManagement Get-ADObject -Times 0 -Exactly
+            $f = Join-Path $TestDrive 'AD匯入範本.xlsx'
+            Test-Path -LiteralPath $f | Should -BeTrue
+            $all = (@((Import-Spreadsheet -Path $f)['說明']) | ForEach-Object { "$($_.'項目') $($_.'說明')" }) -join "`n"
+            $all | Should -Not -Match 'cms|secret|corp\.local|DC=corp'
+            $all | Should -Match 'DC=example,DC=com'
         }
         It '讀取一般 Excel 存出的檔案：共用字串、數字、日期、空白列、缺少的儲存格' -Skip:(-not (Get-Command python3 -ErrorAction SilentlyContinue)) {
             $f = Join-Path $TestDrive 'real.xlsx'
@@ -518,9 +531,18 @@ wb.save(sys.argv[1])
         }
 
         It 'Excel 匯入：先預覽；輸入小寫 yes 不會執行，輸入大寫 YES 才執行' {
-            $tpl = New-ImportTemplate -Path (Join-Path $TestDrive 'import.xlsx')
+            # 自己產生一份有資料的 Excel（範本本身沒有預設資料）
+            $tpl = Join-Path $TestDrive 'import.xlsx'
+            $sheets = @(
+                @{ Name = '群組'; Header = @('群組名稱*', '帳號', 'OU*', '範圍', '類型', '描述', '附註', '成員'); Rows = @(, @('財務部-檔案讀寫', 'FIN-FS-RW', 'Groups', '網域本機', '安全性', '財務部共用資料夾讀寫', '申請單 2026-001', 'alice;bob')) }
+                @{ Name = '使用者'; Header = @('帳號*', '姓', '名', 'OU*', '部門', '主管', '描述', '附註', '啟用', '加入群組'); Rows = @(, @('wang.dm', '王', '大明', 'Users', '財務部', 'alice', '新進人員', '到職日 2026-12-01', '是', 'FIN-FS-RW')) }
+                @{ Name = '群組成員'; Header = @('群組*', '成員*'); Rows = @(@('FIN-FS-RW', 'carol'), @('FIN-FS-RW', 'PC01')) }
+                @{ Name = '移除成員'; Header = @('群組*', '成員*'); Rows = @(, @('Old-Project-Team', 'dave')) }
+                @{ Name = '說明'; Header = @('項目', '說明'); Rows = @(, @('x', 'y')) }
+            )
+            InModuleScope ADManagement -Parameters @{ P = $tpl; Sh = $sheets } { param($P, $Sh) New-XlsxWorkbook -Path $P -Sheets $Sh }
             @(
-                '6', $tpl                           # 批次匯入 → 檔案（範本每列都有 OU，不會詢問預設 OU）
+                '6', $tpl                           # 批次匯入 → 檔案（每列都有 OU，不會詢問預設 OU）
                 'Welcome#2026', 'Welcome#2026'      # 初始密碼兩次
                 'R', 'A'                            # 只看錯誤與略過 → 顯示全部
                 'X', 'yes'                          # 確認，但輸入小寫 → 取消
@@ -534,7 +556,7 @@ wb.save(sys.argv[1])
             $text | Should -Match '已取消，沒有修改 AD'
             $text | Should -Match '工作表「說明」不是匯入用的工作表'
             $text | Should -Match '還原清單：'
-            # 範本：新增群組 1、新增使用者 1、加入成員（群組的 alice;bob + 使用者加入群組 + 群組成員 2）、移除成員（範例群組不存在 → 錯誤，不執行）
+            # 新增群組 1、新增使用者 1、加入成員（群組的 alice;bob + 使用者加入群組 + 群組成員 2）、移除成員（群組不存在 → 錯誤，不執行）
             $cmds = @($global:Changes | ForEach-Object Cmd)
             ($cmds | Where-Object { $_ -eq 'New-ADGroup' }).Count | Should -Be 1
             ($cmds | Where-Object { $_ -eq 'New-ADUser' }).Count | Should -Be 1
