@@ -33,6 +33,8 @@ Describe '唯讀檢查：<Name>' -ForEach $Files {
             'Get-Command', 'Get-Module', 'Import-Module', 'New-Module', 'Export-ModuleMember', 'Get-Date', 'New-Object',
             'Select-Object', 'Where-Object', 'ForEach-Object', 'Sort-Object', 'Format-Table', 'Out-String', 'Out-Null',
             'Out-GridView', 'Write-Host', 'Write-Warning', 'Write-Verbose', 'Write-Error', 'Write-Progress', 'Read-Host'
+            # 啟動腳本：有 ADManagement.psm1 時進入上層選單（管理模組另有 ManagementSafety.Tests.ps1 檢查）
+            'Start-ADTool'
         )
     }
 
@@ -46,7 +48,7 @@ Describe '唯讀檢查：<Name>' -ForEach $Files {
     }
 
     It 'AD 相關指令只能是 Get-*' {
-        $ad = @($CommandNames | Where-Object { $_ -match '-AD' -and $_ -notmatch '^Get-AD' -and $_ -notin $Functions })
+        $ad = @($CommandNames | Where-Object { $_ -match '-AD' -and $_ -notmatch '^Get-AD' -and $_ -notin $Functions -and $_ -ne 'Start-ADTool' })
         $ad | Should -BeNullOrEmpty
     }
 

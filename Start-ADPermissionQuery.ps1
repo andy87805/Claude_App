@@ -1,12 +1,15 @@
 #Requires -Version 5.1
 <#
 .SYNOPSIS
-    Folder / share permission query tool for Active Directory (READ-ONLY).
+    Active Directory permission query (read-only) and management tool.
 
 .DESCRIPTION
     Main menu: folder permissions, group members, user / computer info and groups,
     compare two users' groups, account search, and where a group is used on folders.
-    This tool only READS AD and NTFS permissions. It never creates, changes or deletes anything in AD.
+    The query part only READS AD and NTFS permissions.
+    If ADManagement.psm1 is in the same folder, a top menu also offers the management part
+    (create groups / users, add / remove group members, Excel import). Every change is shown
+    as a preview (dry run) first and only runs after you type YES. Use -QueryOnly to hide it.
     See README.md for the full (Traditional Chinese) documentation.
 
     NOTE: This launcher is intentionally plain ASCII so that it works no matter how the file was
@@ -15,6 +18,9 @@
 
 .PARAMETER Path
     Path to query. If omitted, you will be asked after start-up.
+
+.PARAMETER QueryOnly
+    Load only the read-only query part, even if ADManagement.psm1 exists.
 
 .PARAMETER Server
     Domain controller or domain to query (e.g. dc01.corp.local). Auto-detected if omitted.
@@ -44,7 +50,8 @@ param(
     [ValidateRange(1, 3650)][int]$InactiveDays = 90,
     [string]$LogPath,
     [switch]$NoLog,
-    [switch]$NoGui
+    [switch]$NoGui,
+    [switch]$QueryOnly
 )
 
 $ErrorActionPreference = 'Continue'
@@ -122,23 +129,38 @@ if (Get-Module -ListAvailable -Name ActiveDirectory) {
     Import-Module ActiveDirectory -ErrorAction SilentlyContinue
 }
 
-$source = Read-ModuleSource -File $modulePath
-
-# Check the module text first, so a damaged file gives one clear message instead of many parse errors.
-$parseErrors = $null
-[void][System.Management.Automation.Language.Parser]::ParseInput($source.Text, [ref]$null, [ref]$parseErrors)
-if ($parseErrors -and $parseErrors.Count -gt 0) {
-    $msg = ("ADPermissionQuery.psm1 could not be read correctly (detected encoding: {0}; first error at line {1}: {2}) " +
-        "The file is probably damaged. Please download it again (GitHub: Code > Download ZIP, or the 'Download raw file' button) " +
-        "and do not convert or re-save it.") -f $source.Encoding, $parseErrors[0].Extent.StartLineNumber, $parseErrors[0].Message
-    Write-Error $msg
-    return
+function Import-ToolModule {
+    # Load a module file through Read-ModuleSource. Returns $false (with one clear message) if it cannot be read.
+    param([string]$File, [string]$Name)
+    $source = Read-ModuleSource -File $File
+    # Check the module text first, so a damaged file gives one clear message instead of many parse errors.
+    $parseErrors = $null
+    [void][System.Management.Automation.Language.Parser]::ParseInput($source.Text, [ref]$null, [ref]$parseErrors)
+    if ($parseErrors -and $parseErrors.Count -gt 0) {
+        $msg = ("{3} could not be read correctly (detected encoding: {0}; first error at line {1}: {2}) " +
+            "The file is probably damaged. Please download it again (GitHub: Code > Download ZIP, or the 'Download raw file' button) " +
+            "and do not convert or re-save it.") -f $source.Encoding, $parseErrors[0].Extent.StartLineNumber, $parseErrors[0].Message, (Split-Path $File -Leaf)
+        Write-Error $msg
+        return $false
+    }
+    New-Module -Name $Name -ScriptBlock ([scriptblock]::Create($source.Text)) | Import-Module -Force -Global
+    return $true
 }
-New-Module -Name ADPermissionQuery -ScriptBlock ([scriptblock]::Create($source.Text)) | Import-Module -Force
+
+if (-not (Import-ToolModule -File $modulePath -Name 'ADPermissionQuery')) { return }
+
+# Optional management part (changes AD). Loaded only when the file exists and -QueryOnly is not used.
+$managementPath = Join-Path $PSScriptRoot 'ADManagement.psm1'
+$withManagement = $false
+if (-not $QueryOnly -and (Test-Path -LiteralPath $managementPath)) {
+    $withManagement = Import-ToolModule -File $managementPath -Name 'ADManagement'
+    if (-not $withManagement) { return }
+}
 
 $opt = @{ InactiveDays = $InactiveDays; NoLog = $NoLog; NoGui = $NoGui }
 if ($Server)  { $opt['Server'] = $Server }
 if ($LogPath) { $opt['LogPath'] = $LogPath }
 Set-ADPermissionQueryOption @opt
 
-Start-ADPermissionQuery -Path $Path
+if ($withManagement) { Start-ADTool -Path $Path }
+else { Start-ADPermissionQuery -Path $Path }

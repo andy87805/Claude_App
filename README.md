@@ -1,15 +1,30 @@
-# AD 權限查詢工具（PowerShell）
+# AD 權限查詢與管理工具（PowerShell）
 
-啟動後從主選單選擇要查什麼：輸入資料夾或共用路徑查出**哪些人員、群組有權限**、直接查**群組成員**、查**使用者 / 電腦資訊與所屬群組**、**比較兩位使用者的群組**等。
+啟動後先選擇 **[1] 查詢（唯讀）** 或 **[2] 管理（會修改 AD）**：
 
-> 🛡 **全程唯讀，不會修改 AD 或權限**
+- **查詢**：輸入資料夾或共用路徑查出**哪些人員、群組有權限**、查**群組成員**、**使用者 / 電腦資訊與所屬群組**、**比較兩位使用者的群組**等。
+- **管理**：新增群組 / 使用者、加入 / 移除群組成員，或**讀取 Excel 批次建立**，並依欄位填入描述、附註等資料。每個動作都會**先預覽（dry run）**，確認沒問題後輸入 `YES` 才執行。
+
+| 檔案 | 用途 |
+| --- | --- |
+| `Start-ADPermissionQuery.ps1` | 啟動程式 |
+| `ADPermissionQuery.psm1` | 查詢功能（**唯讀**） |
+| `ADManagement.psm1` | 管理功能（會修改 AD）。**不放這個檔案**，或啟動時加 `-QueryOnly`，就只有查詢功能 |
+
+> 🛡 **查詢功能全程唯讀**
 > - 只用 `Get-Acl`、`Get-ChildItem`、`Get-ADObject`、`Get-ADUser`、`Get-ADGroup`、`Get-ADGroupMember`、`Get-ADComputer` 這類查詢指令。
-> - 程式裡沒有任何 `Set-*`、`Add-AD*`、`Remove-*`、`Set-Acl` 等異動指令；`tests\ReadOnly.Tests.ps1` 會自動掃描程式碼確認這一點。
+> - 查詢模組裡沒有任何 `Set-*`、`Add-AD*`、`Remove-*`、`Set-Acl` 等異動指令；`tests\ReadOnly.Tests.ps1` 會自動掃描程式碼確認這一點。
 > - 只會在**你自己的電腦上**寫兩種檔案：查詢紀錄 log，以及你主動匯出的 CSV / HTML 報表。
+
+> ⚠️ **管理功能的安全機制**
+> - 一律**先預覽**：每一筆會「將執行 / 略過 / 錯誤」以及原因都列出來，預覽時只會查詢 AD，不會修改。
+> - 要輸入**大寫 `YES`** 才會執行；輸入其他內容（包括小寫 yes）都會取消。
+> - 會修改 AD 的指令**只集中在一個函式**，而且只有 `New-ADGroup`、`New-ADUser`、`Add-ADGroupMember`、`Remove-ADGroupMember`（以及還原時的 `Remove-ADUser`、`Remove-ADGroup`）；不會改密碼、搬移、改名、停用帳號或修改既有物件的屬性。`tests\ManagementSafety.Tests.ps1` 會掃描程式碼確認這些規則。
+> - 執行後自動產生**執行結果報表**與**還原清單**，需要時可以一鍵復原（一樣先預覽）。
 
 ---
 
-## 主選單
+## 查詢功能
 
 | 選項 | 說明 |
 | --- | --- |
@@ -41,6 +56,49 @@
 
 ---
 
+## 管理功能
+
+| 選項 | 說明 |
+| --- | --- |
+| [1] 新增群組 | 單筆輸入：名稱、帳號、OU、範圍、類型、描述、附註、要加入的成員 |
+| [2] 新增使用者 | 單筆輸入：帳號、姓名、OU、Email、部門、職稱、電話、主管、描述、附註、到期日、要加入的群組 |
+| [3] 加入成員到群組 | 一次可加多個（使用者、群組或電腦） |
+| [4] 從群組移除成員 | 列出目前成員，用編號或帳號挑選 |
+| [5] 從 Excel 批次匯入 | 讀取 `.xlsx` 或 `.csv`：建立群組、建立使用者、加入成員、移除成員 |
+| [6] 產生 Excel 範本 | 產生含「群組」「使用者」「群組成員」「移除成員」「說明」工作表的範本 |
+| [7] 用還原清單復原 | 載入執行後產生的還原清單，復原那次的變更 |
+
+### Excel 格式
+
+不需要安裝 Excel 或其他模組就能讀取。工作表名稱決定資料種類，第 1 列是標題（中文或英文都可以，標題後面的 `*` 會被忽略）：
+
+| 工作表 | 欄位（* 為必填） |
+| --- | --- |
+| 群組 | 群組名稱\*、帳號、OU\*、範圍（全域 / 網域本機 / 萬用）、類型（安全性 / 發佈）、顯示名稱、**描述**、**附註**、成員、加入到群組 |
+| 使用者 | 帳號\*、姓、名、顯示名稱、OU\*、UPN、Email、部門、職稱、公司、辦公室、電話、手機、員工編號、主管、**描述**、**附註**、帳號到期日、啟用、加入群組 |
+| 群組成員 | 群組\*、成員\* |
+| 移除成員 | 群組\*、成員\* |
+
+- 「成員」「加入群組」可以填多個，用 `;` 或 `,` 分隔。
+- OU 空白時，匯入時可以指定一個預設 OU。
+- 「附註」會寫入 AD 的 `info` 屬性（「內容」視窗中「電話」頁籤的附註欄）。
+- 「帳號到期日」填 `2026-12-31` 表示可以使用到當天結束。
+- **初始密碼**：匯入時輸入一組共用密碼（畫面不顯示，不會存到任何檔案），使用者第一次登入時必須變更。預覽時會依網域密碼原則檢查長度與複雜度。
+- **已存在的群組 / 帳號**：會略過，不會修改既有物件；但該列要加入的成員 / 群組仍會處理。
+
+### 預覽會檢查的項目
+
+OU 是否存在、帳號格式（長度、不允許的字元）、帳號 / UPN 是否已被使用、同一個 OU 內是否有同名物件、Excel 內是否重複、主管是否存在、到期日與欄位值格式、初始密碼是否符合網域原則、成員與群組是否存在、是否已經是成員 / 不是成員。
+
+### 還原清單
+
+每次執行後會在「文件\ADPermissionReports」產生 `還原清單_日期時間.csv`，記錄這次新增了哪些物件（含 ObjectGUID）、加入 / 移除了哪些成員。用管理選單 [7] 載入後會先預覽：
+
+- 新增的群組 / 使用者 → 刪除（**只刪除 ObjectGUID 相符的物件**，不會刪到之後建立的同名物件；已經不存在的會略過）
+- 加入的成員 → 移除；移除的成員 → 加回
+
+> 刪除使用者無法復原（除非網域有啟用 AD 資源回收筒），預覽時會特別提醒。
+
 ## 需求
 
 - Windows 10 / 11 或 Windows Server，**Windows PowerShell 5.1** 或 **PowerShell 7**
@@ -49,10 +107,11 @@
   - Windows 10/11：設定 → 應用程式 → 選用功能 → 新增「RSAT: Active Directory Domain Services and Lightweight Directory Services Tools」
   - Windows Server：`Install-WindowsFeature RSAT-AD-PowerShell`
 - 對要查詢的資料夾有「讀取權限」的權限（查看安全性頁籤所需的權限）
+- 使用管理功能時：需要在目標 OU 建立物件、修改群組成員的 AD 權限
 
 ## 使用方式
 
-1. 下載這個分支的檔案，把 `ADPermissionQuery.psm1` 和 `Start-ADPermissionQuery.ps1` 放在同一個資料夾。
+1. 下載這個分支的檔案，把 `Start-ADPermissionQuery.ps1`、`ADPermissionQuery.psm1`（以及要用管理功能時的 `ADManagement.psm1`）放在同一個資料夾。
    建議在 GitHub 分支頁面按「Code → Download ZIP」解壓縮，或開啟檔案後按右上角的下載按鈕（Download raw file）。
    用複製貼上存檔也可以，啟動腳本會自動處理編碼。
 2. 開啟 PowerShell，切到該資料夾並執行：
@@ -110,6 +169,7 @@
 | `-LogPath` | 查詢紀錄位置，預設 `%LOCALAPPDATA%\ADPermissionQuery\query.log` |
 | `-NoLog` | 不寫查詢紀錄 |
 | `-NoGui` | 不開 Out-GridView 視窗，全部用文字選單（Server Core、遠端工作階段適用） |
+| `-QueryOnly` | 只載入查詢功能（即使資料夾中有 `ADManagement.psm1`） |
 
 ```powershell
 .\Start-ADPermissionQuery.ps1 -Path '\\fs01\share\財務部' -InactiveDays 60
@@ -171,4 +231,6 @@ Invoke-Pester -Path .\tests -Output Detailed
 
 - `tests\ADPermissionQuery.Tests.ps1`：各項功能與完整互動流程（模擬使用者輸入）
 - `tests\ReadOnly.Tests.ps1`：靜態掃描程式碼，確認只用查詢類指令、不呼叫修改 ACL / AD 的方法、寫檔只限 log 與報表
+- `tests\ADManagement.Tests.ps1`：讀取 Excel / CSV、預覽檢查、執行順序、還原清單、互動流程（含「輸入小寫 yes 不會執行」）
+- `tests\ManagementSafety.Tests.ps1`：靜態掃描管理模組，確認修改指令只在一個函式、只有輸入大寫 YES 後才會執行
 - `tests\Launcher.Tests.ps1`：模擬各種下載 / 存檔方式（有無 BOM、BOM 重複、CRLF、UTF-16LE/BE、Big5、已損壞），確認啟動腳本都能正常載入或清楚說明

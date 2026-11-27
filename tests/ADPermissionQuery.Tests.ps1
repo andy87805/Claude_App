@@ -542,7 +542,7 @@ Describe 'ADPermissionQuery' {
             { Start-ADPermissionQuery } | Should -Not -Throw
             $global:InputQueue.Count | Should -Be 0
             $text = $global:HostOutput -join "`n"
-            $text | Should -Match '主選單'
+            $text | Should -Match '查詢（唯讀）'
             $text | Should -Match '找不到名稱包含「zzz」的群組'
             $text | Should -Match '使用者資訊：alice（王小美）'
             $text | Should -Match '主管\s+: Carol Chen'
@@ -567,7 +567,7 @@ Describe 'ADPermissionQuery' {
             @('B', 'Q') | ForEach-Object { $global:InputQueue.Enqueue($_) }
             Start-ADPermissionQuery -Path $global:SharePath
             $global:InputQueue.Count | Should -Be 0
-            ($global:HostOutput -join "`n") | Should -Match '主選單'
+            ($global:HostOutput -join "`n") | Should -Match '查詢（唯讀）'
         }
 
         It '有 Out-GridView 時用視窗挑選群組' {

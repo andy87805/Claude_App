@@ -1,12 +1,19 @@
 ﻿# 測試共用：建立「假的」AD cmdlet 與 ACL，讓測試不需要真的連到 AD。
 # 這些只是空殼函式，實際行為由各測試中的 Mock 決定。
 
-foreach ($name in 'Get-ADObject', 'Get-ADUser', 'Get-ADGroup', 'Get-ADGroupMember', 'Get-ADComputer') {
+$adStubs = 'Get-ADObject', 'Get-ADUser', 'Get-ADGroup', 'Get-ADGroupMember', 'Get-ADComputer', 'Get-ADDomain', 'Get-ADDefaultDomainPasswordPolicy',
+'New-ADGroup', 'New-ADUser', 'Add-ADGroupMember', 'Remove-ADGroupMember', 'Remove-ADUser', 'Remove-ADGroup'
+$adParams = 'Identity', 'Filter', 'Properties', 'Server', 'ResultSetSize', 'SearchBase', 'SearchScope', 'Members', 'Name', 'SamAccountName', 'Path',
+'GroupScope', 'GroupCategory', 'DisplayName', 'Description', 'OtherAttributes', 'PassThru', 'AccountPassword', 'ChangePasswordAtLogon', 'Enabled',
+'UserPrincipalName', 'GivenName', 'Surname', 'EmailAddress', 'Department', 'Title', 'Company', 'Office', 'OfficePhone', 'MobilePhone', 'EmployeeID',
+'Manager', 'AccountExpirationDate'
+foreach ($name in $adStubs) {
     if (-not (Get-Command -Name $name -ErrorAction SilentlyContinue)) {
+        $plist = ($adParams | ForEach-Object { "`$$_" }) -join ', '
         $sb = [scriptblock]::Create(@"
 function global:$name {
-    [CmdletBinding()]
-    param(`$Identity, `$Filter, `$Properties, `$Server, `$ResultSetSize)
+    [CmdletBinding(SupportsShouldProcess)]
+    param($plist)
     throw '$name 尚未被 Mock'
 }
 "@)
@@ -64,7 +71,7 @@ function New-FakeADObject {
         # PowerShell 屬性名稱不分大小寫，$o.SamAccountName 與 $o.sAMAccountName 指向同一個屬性
         objectClass = @('top', $Class); sAMAccountName = $Sam; name = $Name
         distinguishedName = $Dn; objectSid = $Sid; SID = $Sid
-        displayName = $DisplayName; description = ''
+        displayName = $DisplayName; description = ''; objectGUID = [guid]::NewGuid().ToString()
     }
 }
 
@@ -200,3 +207,32 @@ $global:FinanceRules = @(
     New-TestRule 'CORP\Interns' "$($global:DomainSid)-1103" 278 -Type Deny
     New-TestRule 'FS01\jdoe' 'S-1-5-21-7-8-9-1001' 1179817
 )
+
+# 存在的 OU / 容器（管理功能檢查 OU 用）
+$global:FakeOUs = @('OU=Groups,DC=corp,DC=local', 'OU=Users,DC=corp,DC=local', 'OU=Computers,DC=corp,DC=local', 'CN=Users,DC=corp,DC=local')
+
+function Get-FakeADObjectForMgmt {
+    # 模擬 Get-ADObject：-Identity（DN / GUID / OU）、-Filter "sAMAccountName -eq"、-Filter "Name -eq" + SearchBase
+    param($Identity, $Filter, $SearchBase)
+    if ($Identity) {
+        $id = [string]$Identity
+        if ($global:FakeOUs -contains $id) { return [pscustomobject]@{ DistinguishedName = $id; objectClass = @('top', 'organizationalUnit') } }
+        foreach ($o in $global:FakeAD.Values) {
+            if ($o.objectGUID -eq $id -or $o.distinguishedName -eq $id) {
+                return [pscustomobject]@{ sAMAccountName = $o.sAMAccountName; objectClass = $o.objectClass; objectGUID = $o.objectGUID; name = $o.name
+                    distinguishedName = $o.distinguishedName; member = @($global:GroupMembers[$o.distinguishedName]) }
+            }
+        }
+        throw "Cannot find an object with identity: '$id'"
+    }
+    if ($Filter -match "sAMAccountName -eq '((?:[^']|'')*)'") {
+        $sam = $Matches[1] -replace "''", "'"
+        foreach ($o in $global:FakeAD.Values) { if ($o.sAMAccountName -eq $sam) { return $o } }
+        return
+    }
+    if ($Filter -match "Name -eq '((?:[^']|'')*)'") {
+        $n = $Matches[1] -replace "''", "'"
+        foreach ($o in $global:FakeAD.Values) { if ($o.name -eq $n -and $o.distinguishedName -eq "CN=$n,$SearchBase") { return $o } }
+        return
+    }
+}

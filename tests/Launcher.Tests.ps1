@@ -112,6 +112,33 @@ Describe '啟動腳本：模組檔已損壞' {
     }
 }
 
+Describe '啟動腳本：同時有管理模組' {
+    It '載入兩個模組，顯示查詢與管理的上層選單標題' {
+        $dir = New-LauncherCopy -Kind 'original'
+        Copy-Item -LiteralPath (Join-Path $Root 'ADManagement.psm1') -Destination $dir
+        $r = Invoke-Launcher -Dir $dir
+        $r.Text | Should -Not -Match 'ParserError|could not be read'
+        $r.Text | Should -Match 'AD 權限查詢與管理工具'
+        $r.Text | Should -Match '找不到 ActiveDirectory 模組'
+    }
+    It '管理模組存成 UTF-16 也能載入' {
+        $dir = New-LauncherCopy -Kind 'original'
+        $b = [System.IO.File]::ReadAllBytes((Join-Path $Root 'ADManagement.psm1'))
+        $t = [System.Text.Encoding]::UTF8.GetString($b, 3, $b.Length - 3)
+        [System.IO.File]::WriteAllBytes((Join-Path $dir 'ADManagement.psm1'), [byte[]](@(0xFF, 0xFE) + [System.Text.Encoding]::Unicode.GetBytes($t)))
+        $r = Invoke-Launcher -Dir $dir
+        $r.Text | Should -Match 'AD 權限查詢與管理工具'
+    }
+    It '-QueryOnly 時只載入查詢功能' {
+        $dir = New-LauncherCopy -Kind 'original'
+        Copy-Item -LiteralPath (Join-Path $Root 'ADManagement.psm1') -Destination $dir
+        $script = Join-Path $dir 'Start-ADPermissionQuery.ps1'
+        $out = & $Pwsh -NoLogo -NoProfile -NonInteractive -Command "& '$script' -NoLog -QueryOnly" 2>&1 | Out-String
+        $out | Should -Match 'AD 權限查詢工具（唯讀，不會修改 AD）'
+        $out | Should -Not -Match '查詢與管理工具'
+    }
+}
+
 Describe '啟動腳本：缺少模組檔' {
     It '顯示清楚的錯誤訊息' {
         $dir = New-LauncherCopy -Kind 'original'

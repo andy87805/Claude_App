@@ -963,13 +963,16 @@ $script:ViewColumns = @{
     Info       = [ordered]@{ Field = '項目'; Value = '內容' }
     Compare    = [ordered]@{ Name = '群組名稱'; Category = '類型'; Scope = '範圍'; Result = '比較結果'; ViaA = 'A 的取得方式'; ViaB = 'B 的取得方式'; Description = '描述' }
     Usage      = [ordered]@{ Folder = '資料夾'; Identity = '帳戶'; Rights = '權限'; AccessType = '允許/拒絕'; AppliesTo = '套用到'; IsInherited = '繼承'; Note = '備註' }
+    # 管理模組（ADManagement.psm1）的變更預覽與執行結果
+    Plan       = [ordered]@{ Source = '來源'; Action = '動作'; Target = '對象'; Detail = '內容'; Status = '預覽結果'; Reason = '說明' }
+    PlanResult = [ordered]@{ Source = '來源'; Action = '動作'; Target = '對象'; Detail = '內容'; Result = '執行結果'; Message = '訊息' }
 }
 
 function Format-ForDisplay {
     <# 轉成中文欄位名稱的顯示物件，並加上 # 編號 #>
     [CmdletBinding()]
     param(
-        [Parameter(Mandatory)][ValidateSet('Permission', 'Member', 'Access', 'Scan', 'Group', 'User', 'Computer', 'Info', 'Compare', 'Usage')][string]$Kind,
+        [Parameter(Mandatory)][ValidateSet('Permission', 'Member', 'Access', 'Scan', 'Group', 'User', 'Computer', 'Info', 'Compare', 'Usage', 'Plan', 'PlanResult')][string]$Kind,
         [AllowEmptyCollection()][object[]]$InputObject = @(),
         [switch]$NoIndex
     )
@@ -1034,7 +1037,7 @@ function Export-QueryReport {
     #>
     [CmdletBinding()]
     param(
-        [Parameter(Mandatory)][ValidateSet('Permission', 'Member', 'Access', 'Scan', 'Group', 'User', 'Computer', 'Info', 'Compare', 'Usage')][string]$Kind,
+        [Parameter(Mandatory)][ValidateSet('Permission', 'Member', 'Access', 'Scan', 'Group', 'User', 'Computer', 'Info', 'Compare', 'Usage', 'Plan', 'PlanResult')][string]$Kind,
         [AllowEmptyCollection()][object[]]$InputObject = @(),
         [Parameter(Mandatory)][string]$Title,
         [ValidateSet('CSV', 'HTML', 'Both')][string]$Format = 'Both',
@@ -1208,6 +1211,11 @@ function Get-CellColor {
         '^中斷繼承$'         { if ($Value -eq '是') { return 'Yellow' }; return $null }
         '^比較結果$'         { if ($Value -eq '兩者都有') { return 'DarkGray' }; return 'Yellow' }
         '^(備註|描述)$'      { return 'DarkGray' }
+        '^(預覽結果|執行結果)$' {
+            if ($Value -match '^(將執行|成功)') { return 'Green' }
+            if ($Value -match '^(錯誤|失敗)') { return 'Red' }
+            return 'DarkGray'
+        }
     }
     return $null
 }
@@ -1224,6 +1232,8 @@ $script:ConsoleView = @{
     Info       = @{ Hide = @(); ShrinkFirst = @() }
     Compare    = @{ Hide = @(); ShrinkFirst = @('描述', 'B 的取得方式', 'A 的取得方式') }
     Usage      = @{ Hide = @(); ShrinkFirst = @('備註', '套用到') }
+    Plan       = @{ Hide = @(); ShrinkFirst = @('說明', '來源', '內容') }
+    PlanResult = @{ Hide = @(); ShrinkFirst = @('來源', '內容', '訊息') }
 }
 
 function Show-Table {
@@ -1806,8 +1816,27 @@ function Invoke-PathFlow {
     }
 }
 
+function Show-Banner {
+    $bar = '=' * 52
+    Write-Host ''
+    Write-Host "  $bar" -ForegroundColor Cyan
+    Write-Host '    AD 權限查詢工具（唯讀，不會修改 AD）' -ForegroundColor Cyan
+    Write-Host "  $bar" -ForegroundColor Cyan
+    Write-Host '    任何清單都可以篩選、匯出；名稱可以只輸入一部分' -ForegroundColor DarkGray
+}
+
+function Test-ADModuleAvailable {
+    <# 檢查 ActiveDirectory 模組；沒有時顯示安裝說明 #>
+    if (Get-Command -Name Get-ADUser -ErrorAction SilentlyContinue) { return $true }
+    Write-Status '找不到 ActiveDirectory 模組。請先安裝 RSAT「Active Directory 網域服務工具」。' -Level Error
+    Write-Status 'Windows 10/11：設定 > 應用程式 > 選用功能 > 新增「RSAT: Active Directory Domain Services...」' -Level Hint
+    Write-Status 'Windows Server：Install-WindowsFeature RSAT-AD-PowerShell（需由系統管理員安裝）' -Level Hint
+    return $false
+}
+
 function Show-MainMenu {
-    Write-Section '主選單'
+    param([string]$QuitLabel = '離開')
+    Write-Section '查詢（唯讀）'
     $items = @(
         [pscustomobject]@{ Key = '1'; Label = '查詢路徑權限'; Hint = '誰有這個資料夾的權限' }
         [pscustomobject]@{ Key = '2'; Label = '查群組成員'; Hint = '輸入群組名稱，列出成員' }
@@ -1817,7 +1846,7 @@ function Show-MainMenu {
         [pscustomobject]@{ Key = '6'; Label = '反查使用者權限'; Hint = '某人在某個路徑有什麼權限' }
         [pscustomobject]@{ Key = '7'; Label = '查電腦帳號'; Hint = '作業系統、IP、狀態、所屬群組' }
         [pscustomobject]@{ Key = '8'; Label = '查群組使用處'; Hint = '群組被用在哪些資料夾' }
-        [pscustomobject]@{ Key = 'Q'; Label = '離開'; Hint = '' }
+        [pscustomobject]@{ Key = 'Q'; Label = $QuitLabel; Hint = '' }
     )
     foreach ($it in $items) {
         Write-Host '  [' -NoNewline
@@ -1835,28 +1864,18 @@ function Start-ADPermissionQuery {
         直接查詢這個路徑的權限（查完回到主選單）。
     #>
     [CmdletBinding()]
-    param([string]$Path)
+    param([string]$Path, [switch]$Embedded)
 
-    $bar = '=' * 52
-    Write-Host ''
-    Write-Host "  $bar" -ForegroundColor Cyan
-    Write-Host '    AD 權限查詢工具（唯讀，不會修改 AD）' -ForegroundColor Cyan
-    Write-Host "  $bar" -ForegroundColor Cyan
-    Write-Host '    任何清單都可以篩選、匯出；名稱可以只輸入一部分' -ForegroundColor DarkGray
+    if (-not $Embedded) { Show-Banner }
 
-    if (-not (Get-Command -Name Get-ADUser -ErrorAction SilentlyContinue)) {
-        Write-Status '找不到 ActiveDirectory 模組。請先安裝 RSAT「Active Directory 網域服務工具」。' -Level Error
-        Write-Status 'Windows 10/11：設定 > 應用程式 > 選用功能 > 新增「RSAT: Active Directory Domain Services...」' -Level Hint
-        Write-Status 'Windows Server：Install-WindowsFeature RSAT-AD-PowerShell（需由系統管理員安裝）' -Level Hint
-        return
-    }
+    if (-not (Test-ADModuleAvailable)) { return }
 
     if ($Path) {
         if ((Invoke-PathFlow -Path $Path) -eq 'quit') { return }
     }
 
     while ($true) {
-        Show-MainMenu
+        if ($Embedded) { Show-MainMenu -QuitLabel '返回上一層' } else { Show-MainMenu }
         $c = (Read-Choice '請選擇').ToUpperInvariant()
         switch ($c) {
             '1' { if ((Invoke-PathFlow) -eq 'quit') { return } }
@@ -1877,4 +1896,9 @@ Export-ModuleMember -Function Start-ADPermissionQuery, Set-ADPermissionQueryOpti
 Find-UserPathAccess, Get-SubfolderPermissionDiff, Export-QueryReport, Select-ByKeyword, Format-ForDisplay,
 Convert-FileSystemRight, Convert-InheritanceToText, Resolve-AclIdentity, Get-PathAclInfo,
 Find-ADGroupByName, Find-ADUserByKeyword, Find-ADComputerByName, Get-PrincipalGroupDetail, Get-ADUserInfo,
-Get-ADComputerInfo, Compare-ADUserGroup, Find-GroupFolderUsage
+Get-ADComputerInfo, Compare-ADUserGroup, Find-GroupFolderUsage,
+# 以下為共用的顯示 / 輸入函式，供 ADManagement.psm1 使用
+Show-Banner, Test-ADModuleAvailable, Show-Table, Show-Result, Show-Options, Show-InfoBlock, Write-Status, Write-Section,
+Read-Choice, Read-YesNo, Select-OneItem, Select-GroupInteractive, Read-ExportChoice, Write-QueryLog, Get-SamFromInput,
+Get-ADServerParam, Get-DefaultExportFolder, Get-SafeFileName, Get-DisplayWidth, Format-Cell, ConvertTo-LdapFilterValue,
+Invoke-ListMenu, Get-GroupMemberDetail
