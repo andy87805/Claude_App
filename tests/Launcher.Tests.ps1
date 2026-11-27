@@ -73,7 +73,7 @@ BeforeAll {
     function Invoke-Launcher {
         param([string]$Dir, [string]$Culture = 'zh-TW')
         $script = Join-Path $Dir 'Start-ADPermissionQuery.ps1'
-        $cmd = "& '$script' -NoLog"
+        $cmd = "& '$script' -NoLog; exit `$LASTEXITCODE"
         if ($Culture) { $cmd = "[System.Globalization.CultureInfo]::CurrentCulture = '$Culture'; $cmd" }
         $out = & $Pwsh -NoLogo -NoProfile -NonInteractive -Command $cmd 2>&1
         [pscustomobject]@{ ExitCode = $LASTEXITCODE; Text = ($out | Out-String) }
@@ -88,7 +88,7 @@ Describe '啟動腳本：<Variant>' -ForEach $Variants {
         $r.Text | Should -Match 'AD 權限查詢工具（唯讀，不會修改 AD）'
         $r.Text | Should -Match '找不到 ActiveDirectory 模組'
         $r.Text | Should -Not -Match 'broken characters'
-        $r.ExitCode | Should -Be 0
+        $r.ExitCode | Should -Be 2      # 2 = 沒有安裝 RSAT（測試環境沒有 ActiveDirectory 模組）
     }
 }
 
@@ -136,6 +136,34 @@ Describe '啟動腳本：同時有管理模組' {
         $out = & $Pwsh -NoLogo -NoProfile -NonInteractive -Command "& '$script' -NoLog -QueryOnly" 2>&1 | Out-String
         $out | Should -Match 'AD 權限查詢工具（唯讀，不會修改 AD）'
         $out | Should -Not -Match '查詢與管理工具'
+    }
+}
+
+Describe '雙擊啟動檔 AD工具.cmd' {
+    BeforeAll {
+        $script:CmdFile = Join-Path $Root 'AD工具.cmd'
+        $script:CmdBytes = [System.IO.File]::ReadAllBytes($CmdFile)
+        $script:CmdText = [System.Text.Encoding]::ASCII.GetString($CmdBytes)
+    }
+    It '純 ASCII 且使用 CRLF 換行（cmd.exe 才能正確執行）' {
+        @($CmdBytes | Where-Object { $_ -ge 0x80 }).Count | Should -Be 0
+        $lf = @($CmdBytes | Where-Object { $_ -eq 0x0A }).Count
+        $crlf = ([regex]::Matches($CmdText, "`r`n")).Count
+        $crlf | Should -Be $lf
+    }
+    It '用 -ExecutionPolicy Bypass 執行同資料夾的啟動腳本，並傳遞參數' {
+        $CmdText | Should -Match 'set "SCRIPT=%~dp0Start-ADPermissionQuery\.ps1"'
+        $CmdText | Should -Match 'powershell\.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%SCRIPT%" %\*'
+        $CmdText | Should -Match 'if errorlevel 1 \('
+        $CmdText | Should -Match 'pause'
+    }
+    It '用與 .cmd 相同的方式執行時，錯誤碼會傳回（讓視窗停住顯示訊息）' {
+        $dir = New-LauncherCopy -Kind 'original'
+        & $Pwsh -NoLogo -NoProfile -ExecutionPolicy Bypass -File (Join-Path $dir 'Start-ADPermissionQuery.ps1') -NoLog | Out-Null
+        $LASTEXITCODE | Should -Be 2
+        Remove-Item -LiteralPath (Join-Path $dir 'ADPermissionQuery.psm1')
+        & $Pwsh -NoLogo -NoProfile -ExecutionPolicy Bypass -File (Join-Path $dir 'Start-ADPermissionQuery.ps1') -NoLog 2>&1 | Out-Null
+        $LASTEXITCODE | Should -Be 1
     }
 }
 

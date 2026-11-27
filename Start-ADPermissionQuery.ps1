@@ -122,7 +122,7 @@ function Read-ModuleSource {
 $modulePath = Join-Path $PSScriptRoot 'ADPermissionQuery.psm1'
 if (-not (Test-Path -LiteralPath $modulePath)) {
     Write-Error "Cannot find ADPermissionQuery.psm1. Put it in the same folder as this script: $PSScriptRoot"
-    return
+    exit 1
 }
 
 if (Get-Module -ListAvailable -Name ActiveDirectory) {
@@ -147,14 +147,14 @@ function Import-ToolModule {
     return $true
 }
 
-if (-not (Import-ToolModule -File $modulePath -Name 'ADPermissionQuery')) { return }
+if (-not (Import-ToolModule -File $modulePath -Name 'ADPermissionQuery')) { exit 1 }
 
 # Optional management part (changes AD). Loaded only when the file exists and -QueryOnly is not used.
 $managementPath = Join-Path $PSScriptRoot 'ADManagement.psm1'
 $withManagement = $false
 if (-not $QueryOnly -and (Test-Path -LiteralPath $managementPath)) {
     $withManagement = Import-ToolModule -File $managementPath -Name 'ADManagement'
-    if (-not $withManagement) { return }
+    if (-not $withManagement) { exit 1 }
 }
 
 $opt = @{ InactiveDays = $InactiveDays; NoLog = $NoLog; NoGui = $NoGui }
@@ -164,3 +164,8 @@ Set-ADPermissionQueryOption @opt
 
 if ($withManagement) { Start-ADTool -Path $Path }
 else { Start-ADPermissionQuery -Path $Path }
+
+# Exit codes (used by the double-click launcher to keep the window open so the message can be read):
+#   0 = normal exit, 1 = a module file is missing or damaged, 2 = ActiveDirectory module (RSAT) not installed
+if (-not (Get-Command -Name Get-ADUser -ErrorAction SilentlyContinue)) { exit 2 }
+exit 0
