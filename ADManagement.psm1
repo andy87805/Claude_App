@@ -378,7 +378,7 @@ function New-ImportTemplate {
             Rows = @(
                 , @('使用方式', '在要用的工作表填資料（第 1 列標題不要改），不需要的工作表可以刪除或留空。匯入時會先預覽，確認後輸入 YES 才會執行。')
                 , @('必填欄位', '標題有 * 的欄位必填。OU 空白時，匯入時可以指定一個預設 OU。')
-                , @('OU', '填完整的 DN，例如 OU=Groups,' + $DomainDN)
+                , @('OU', '可以用 / 分隔，由上往下寫（和 AD 樹狀圖相同），例如 台北/財務部/帳號；也可以填完整的 DN，例如 OU=帳號,OU=財務部,OU=台北,' + $DomainDN)
                 , @('群組 範圍', '全域 / 網域本機 / 萬用（空白 = 全域）')
                 , @('群組 類型', '安全性 / 發佈（空白 = 安全性）')
                 , @('成員 / 加入群組', '可填多個帳號或群組，用 ; 或 , 分隔。成員可以是使用者、群組或電腦（電腦填名稱即可）。')
@@ -453,7 +453,8 @@ function New-PlanContext {
         Container  = @{}
         Members    = @{}
         Upn        = @{}
-        UpnSuffix  = $null
+        Domain     = $null    # @{ DN; DNS }
+        OUPath     = @{}      # OU 欄位文字 → 轉換結果
         Policy     = $null
         PolicyRead = $false
         Order      = 0
@@ -547,13 +548,81 @@ function Get-DirectMemberSet {
     return , $Ctx.Members[$GroupDN]
 }
 
+function Get-DomainInfo {
+    <# 網域的 DN（DC=corp,DC=local）與 DNS 名稱（corp.local） #>
+    param($Ctx)
+    if (-not $Ctx.Domain) {
+        $srv = Get-ADServerParam
+        try {
+            $d = Get-ADDomain @srv -ErrorAction Stop
+            $Ctx.Domain = @{ DN = [string]$d.DistinguishedName; DNS = [string]$d.DNSRoot }
+        }
+        catch { $Ctx.Domain = @{ DN = ''; DNS = '' } }
+    }
+    return $Ctx.Domain
+}
+
 function Get-UpnSuffix {
     param($Ctx)
-    if (-not $Ctx.UpnSuffix) {
-        $srv = Get-ADServerParam
-        try { $Ctx.UpnSuffix = [string](Get-ADDomain @srv -ErrorAction Stop).DNSRoot } catch { $Ctx.UpnSuffix = '' }
+    return (Get-DomainInfo $Ctx).DNS
+}
+
+function ConvertTo-DNValue {
+    <# DN 中名稱的特殊字元要在前面加 \（例如 研發, 一部 → 研發\, 一部） #>
+    param([string]$Text)
+    return ($Text -replace '([\\,+"<>;=#])', '\$1')
+}
+
+function Resolve-OUPath {
+    <#
+    .SYNOPSIS
+        把 OU 欄位轉成 DN。可以填：
+          - 完整 DN：OU=帳號,OU=財務部,OU=台北,DC=corp,DC=local（照原樣使用）
+          - 用 / 分隔的路徑，由上往下寫（和 AD 樹狀圖相同）：台北/財務部/帳號
+            開頭可加網域名稱（corp.local/台北/財務部/帳號），也可以用 \ 分隔
+        路徑會逐層查詢：每一層先找 OU，找不到再找同名的內建容器（例如 Users）。
+        回傳 @{ DN; Display; Error }（只查詢 AD，不會修改）
+    #>
+    param($Ctx, [string]$Text)
+    $t = "$Text".Trim()
+    if (-not $t) { return @{ DN = ''; Display = ''; Error = '' } }
+    if ($t -match '^(OU|CN|DC)\s*=') { return @{ DN = $t; Display = $t; Error = '' } }
+    $key = $t.ToLowerInvariant()
+    if ($Ctx.OUPath.ContainsKey($key)) { return $Ctx.OUPath[$key] }
+
+    $segs = @($t -split '[/\\]' | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+    $dom = Get-DomainInfo $Ctx
+    $result = $null
+    if (-not $dom.DN) {
+        $result = @{ DN = ''; Display = $t; Error = '無法取得網域名稱，請改填完整的 DN（例如 OU=帳號,OU=財務部,DC=corp,DC=local）' }
     }
-    return $Ctx.UpnSuffix
+    else {
+        if ($segs.Count -gt 0 -and $dom.DNS -and $segs[0] -ieq $dom.DNS) { $segs = @($segs | Select-Object -Skip 1) }
+        if ($segs.Count -eq 0) {
+            $result = @{ DN = ''; Display = $t; Error = 'OU 路徑是空的' }
+        }
+        else {
+            $parent = $dom.DN
+            $err = ''
+            $walked = @()
+            foreach ($seg in $segs) {
+                $walked += $seg
+                $v = ConvertTo-DNValue $seg
+                $ou = "OU=$v,$parent"
+                $cn = "CN=$v,$parent"
+                if ($err) { $parent = $ou; continue }
+                if (Test-ADContainer $Ctx $ou) { $parent = $ou }
+                elseif (Test-ADContainer $Ctx $cn) { $parent = $cn }
+                else {
+                    $err = "找不到「$seg」這一層（$($walked -join '/')）"
+                    $parent = $ou
+                }
+            }
+            $result = @{ DN = $parent; Display = ($segs -join '/'); Error = $err }
+        }
+    }
+    $Ctx.OUPath[$key] = $result
+    return $result
 }
 
 function ConvertFrom-SecurePlain {
@@ -633,7 +702,9 @@ function Add-GroupPlan {
         $errors = New-Object System.Collections.Generic.List[string]
         $name = "$($r.Name)".Trim()
         $sam = if ("$($r.SamAccountName)".Trim()) { "$($r.SamAccountName)".Trim() } else { $name }
-        $path = if ("$($r.Path)".Trim()) { "$($r.Path)".Trim() } else { "$($Ctx.DefaultOU)" }
+        $ouText = if ("$($r.Path)".Trim()) { "$($r.Path)".Trim() } else { "$($Ctx.DefaultOU)" }
+        $ouInfo = Resolve-OUPath $Ctx $ouText
+        $path = $ouInfo.DN
         $scope = ConvertTo-GroupScopeValue $r.Scope
         $cat = ConvertTo-GroupCategoryValue $r.Category
 
@@ -642,7 +713,8 @@ function Add-GroupPlan {
         if ($sam.Length -gt 64) { $errors.Add('帳號超過 64 個字元') }
         if (-not $scope) { $errors.Add("範圍「$($r.Scope)」無法辨識（全域 / 網域本機 / 萬用）") }
         if (-not $cat) { $errors.Add("類型「$($r.Category)」無法辨識（安全性 / 發佈）") }
-        if (-not $path) { $errors.Add('沒有指定 OU') }
+        if (-not $ouText) { $errors.Add('沒有指定 OU') }
+        elseif ($ouInfo.Error) { $errors.Add("OU 有誤：$($ouInfo.Display)，$($ouInfo.Error)") }
         elseif (-not (Test-ADContainer $Ctx $path)) { $errors.Add("OU 不存在：$path") }
         $key = $sam.ToLowerInvariant()
         if ($sam -and $seen.ContainsKey($key)) { $errors.Add("與 $($seen[$key]) 重複") }
@@ -660,7 +732,7 @@ function Add-GroupPlan {
             }
         }
 
-        $parts = @("OU：$path")
+        $parts = @("OU：$(if ($ouInfo.Display) { $ouInfo.Display } else { $path })")
         if ($scope) { $parts += "範圍：$($scopeText[$scope])" }
         if ($cat) { $parts += "類型：$($catText[$cat])" }
         if ($r.Description) { $parts += "描述：$($r.Description)" }
@@ -693,13 +765,16 @@ function Add-UserPlan {
         $display = "$($r.DisplayName)".Trim()
         if (-not $display) { $display = ("$sur$given").Trim() }
         if (-not $display) { $display = $sam }
-        $path = if ("$($r.Path)".Trim()) { "$($r.Path)".Trim() } else { "$($Ctx.DefaultOU)" }
+        $ouText = if ("$($r.Path)".Trim()) { "$($r.Path)".Trim() } else { "$($Ctx.DefaultOU)" }
+        $ouInfo = Resolve-OUPath $Ctx $ouText
+        $path = $ouInfo.DN
 
         if (-not $sam) { $errors.Add('帳號是空的') }
         elseif ($sam -match $script:InvalidSamChars) { $errors.Add('帳號含有不允許的字元（" / \ [ ] : ; | = , + * ? < > @）') }
         elseif ($sam.Length -gt 20) { $errors.Add('帳號超過 20 個字元') }
         elseif ($sam.EndsWith('.')) { $errors.Add('帳號不能以「.」結尾') }
-        if (-not $path) { $errors.Add('沒有指定 OU') }
+        if (-not $ouText) { $errors.Add('沒有指定 OU') }
+        elseif ($ouInfo.Error) { $errors.Add("OU 有誤：$($ouInfo.Display)，$($ouInfo.Error)") }
         elseif (-not (Test-ADContainer $Ctx $path)) { $errors.Add("OU 不存在：$path") }
 
         $upn = "$($r.UserPrincipalName)".Trim()
@@ -765,7 +840,7 @@ function Add-UserPlan {
             }
         }
 
-        $parts = @("OU：$path")
+        $parts = @("OU：$(if ($ouInfo.Display) { $ouInfo.Display } else { $path })")
         if ($upn) { $parts += "UPN：$upn" }
         foreach ($f in @(@('部門', $r.Department), @('職稱', $r.Title), @('Email', $r.EmailAddress), @('主管', $r.Manager), @('描述', $r.Description), @('附註', $r.Info))) {
             if ("$($f[1])".Trim()) { $parts += "$($f[0])：$($f[1])" }
@@ -1123,9 +1198,9 @@ function Read-Field {
 
 function Read-OU {
     param([string]$Kind = '群組')
-    $sample = if ($Kind -eq '使用者') { 'OU=Users,DC=corp,DC=local' } else { 'OU=Groups,DC=corp,DC=local' }
+    $sample = if ($Kind -eq '使用者') { '台北/財務部/帳號' } else { '台北/財務部/群組' }
     $def = $script:Mgmt["LastOU_$Kind"]
-    $v = Read-Field -Label "OU（例如 $sample）" -Default $def -Required
+    $v = Read-Field -Label "OU（例如 $sample，或完整的 DN）" -Default $def -Required
     if ($v) { $script:Mgmt["LastOU_$Kind"] = $v }
     return $v
 }
@@ -1251,7 +1326,7 @@ function Invoke-ImportMenu {
     $defaultOU = ''
     $needOU = @(@($data.Group) + @($data.User) | Where-Object { -not $_.Path }).Count
     if ($needOU -gt 0) {
-        $defaultOU = Read-Choice "有 $needOU 列沒有填 OU，要使用哪個預設 OU？（例如 OU=Users,DC=corp,DC=local；直接按 Enter 表示不指定，這些列會顯示錯誤）"
+        $defaultOU = Read-Choice "有 $needOU 列沒有填 OU，要使用哪個預設 OU？（例如 台北/財務部/帳號，或完整的 DN；直接按 Enter 表示不指定，這些列會顯示錯誤）"
     }
     $pw = $null
     if ($data.User.Count -gt 0) {

@@ -209,7 +209,10 @@ $global:FinanceRules = @(
 )
 
 # 存在的 OU / 容器（管理功能檢查 OU 用）
-$global:FakeOUs = @('OU=Groups,DC=corp,DC=local', 'OU=Users,DC=corp,DC=local', 'OU=Computers,DC=corp,DC=local', 'CN=Users,DC=corp,DC=local')
+$global:FakeOUs = @('OU=Groups,DC=corp,DC=local', 'OU=Users,DC=corp,DC=local', 'OU=Computers,DC=corp,DC=local', 'CN=Users,DC=corp,DC=local',
+    'CN=Builtin,DC=corp,DC=local',                                  # 內建容器（不是 OU）
+    'OU=台北,DC=corp,DC=local', 'OU=財務部,OU=台北,DC=corp,DC=local', 'OU=帳號,OU=財務部,OU=台北,DC=corp,DC=local',
+    'OU=R&D\, Lab,OU=台北,DC=corp,DC=local')                        # 名稱中有逗號
 
 function Get-FakeADObjectForMgmt {
     # 模擬 Get-ADObject：-Identity（DN / GUID / OU）、-Filter "sAMAccountName -eq"、-Filter "Name -eq" + SearchBase

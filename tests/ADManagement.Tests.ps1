@@ -181,6 +181,55 @@ wb.save(sys.argv[1])
         }
     }
 
+    Context 'OU 可以用 / 分隔的路徑填寫' {
+        It '<Text> → <Expected>' -TestCases @(
+            @{ Text = '台北/財務部/帳號'; Expected = 'OU=帳號,OU=財務部,OU=台北,DC=corp,DC=local' }
+            @{ Text = 'corp.local/台北/財務部/帳號'; Expected = 'OU=帳號,OU=財務部,OU=台北,DC=corp,DC=local' }
+            @{ Text = '/台北/財務部/帳號/'; Expected = 'OU=帳號,OU=財務部,OU=台北,DC=corp,DC=local' }
+            @{ Text = '台北\財務部\帳號'; Expected = 'OU=帳號,OU=財務部,OU=台北,DC=corp,DC=local' }
+            @{ Text = ' 台北 / 財務部 / 帳號 '; Expected = 'OU=帳號,OU=財務部,OU=台北,DC=corp,DC=local' }
+            @{ Text = 'Builtin'; Expected = 'CN=Builtin,DC=corp,DC=local' }
+            @{ Text = '台北/R&D, Lab'; Expected = 'OU=R&D\, Lab,OU=台北,DC=corp,DC=local' }
+            @{ Text = 'OU=Groups,DC=corp,DC=local'; Expected = 'OU=Groups,DC=corp,DC=local' }
+        ) {
+            $r = InModuleScope ADManagement -Parameters @{ T = $Text } {
+                param($T)
+                $ctx = New-PlanContext
+                Resolve-OUPath $ctx $T
+            }
+            $r.DN | Should -Be $Expected
+            $r.Error | Should -BeNullOrEmpty
+        }
+        It '找不到某一層時，指出是哪一層' {
+            $r = InModuleScope ADManagement { $ctx = New-PlanContext; Resolve-OUPath $ctx '台北/不存在/帳號' }
+            $r.Error | Should -Be '找不到「不存在」這一層（台北/不存在）'
+        }
+        It '預覽：新增群組 / 使用者時接受路徑寫法，內容欄顯示路徑' {
+            $plan = New-ChangePlan -GroupRows @(New-Row @{ Source = 'A'; Name = 'G-Path'; Path = '台北/財務部' }) `
+                -UserRows @(
+                    New-Row @{ Source = 'B'; SamAccountName = 'u.path'; Path = '台北/財務部/帳號' }
+                    New-Row @{ Source = 'C'; SamAccountName = 'u.bad'; Path = '台北/財務部/不存在' }
+                ) -Password $global:Pw
+            $plan[0].Status | Should -Be '將執行'
+            $plan[0].Data.Path | Should -Be 'OU=財務部,OU=台北,DC=corp,DC=local'
+            $plan[0].Detail | Should -Match '^OU：台北/財務部；'
+            $plan[1].Status | Should -Be '將執行'
+            $plan[1].Data.Path | Should -Be 'OU=帳號,OU=財務部,OU=台北,DC=corp,DC=local'
+            $plan[2].Status | Should -Be '錯誤'
+            $plan[2].Reason | Should -Match 'OU 有誤：台北/財務部/不存在，找不到「不存在」這一層'
+        }
+        It '預設 OU 也可以用路徑寫法' {
+            $plan = New-ChangePlan -UserRows @(New-Row @{ Source = 'A'; SamAccountName = 'u.def' }) -Password $global:Pw -DefaultOU '台北/財務部/帳號'
+            $plan[0].Status | Should -Be '將執行'
+            $plan[0].Data.Path | Should -Be 'OU=帳號,OU=財務部,OU=台北,DC=corp,DC=local'
+        }
+        It '執行時使用轉換後的 DN' {
+            $plan = New-ChangePlan -UserRows @(New-Row @{ Source = 'A'; SamAccountName = 'u.run'; Path = '台北/財務部/帳號' }) -Password $global:Pw
+            InModuleScope ADManagement -Parameters @{ Plan = $plan; Pw = $global:Pw; F = $TestDrive } { param($Plan, $Pw, $F) Invoke-ADChangePlan -Plan $Plan -Password $Pw -Folder $F } | Out-Null
+            $global:Changes[0].Args.Path | Should -Be 'OU=帳號,OU=財務部,OU=台北,DC=corp,DC=local'
+        }
+    }
+
     Context '預覽（dry run）：新增使用者' {
         It '帳號、UPN、主管、到期日、密碼原則都會檢查' {
             $rows = @(
