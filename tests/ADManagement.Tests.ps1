@@ -543,6 +543,57 @@ wb.save(sys.argv[1])
             @(Get-ChildItem -LiteralPath (Join-Path $TestDrive 'out') -Filter '還原清單_*.csv').Count | Should -Be 1
         }
 
+
+        It '選擇檔案：直接按 Enter 開啟選擇檔案視窗；取消時返回；輸入 B 返回' {
+            $csv = Join-Path $TestDrive 'pick.csv'
+            [System.IO.File]::WriteAllText($csv, "群組,成員`r`nFinance-RW,dave`r`n", (New-Object System.Text.UTF8Encoding($true)))
+            $global:DialogResult = $csv
+            Mock -ModuleName ADManagement Show-OpenFileDialog { $global:DialogCalls++; $global:DialogResult }
+            $global:DialogCalls = 0
+            @(
+                '6', '', '3', 'B'        # Enter → 選擇檔案視窗選到 CSV → 加入成員 → 預覽後取消
+                '6', 'B'                 # 輸入 B 直接返回
+                'Q'
+            ) | ForEach-Object { $global:InputQueue.Enqueue($_) }
+            Start-ADManagement
+            $global:DialogCalls | Should -Be 1
+            $text = $global:HostOutput -join "`n"
+            $text | Should -Match ([regex]::Escape("已選擇：$csv"))
+            $text | Should -Match '加入成員'
+            $global:InputQueue.Count | Should -Be 0
+            # 在選擇檔案視窗按「取消」
+            $global:DialogResult = $null
+            @('6', '', 'Q') | ForEach-Object { $global:InputQueue.Enqueue($_) }
+            Start-ADManagement
+            ($global:HostOutput -join "`n") | Should -Match '沒有選擇檔案'
+            $global:Changes.Count | Should -Be 0
+        }
+
+        It '以系統管理員身分執行時，提示不能拖曳並說明替代方式' {
+            Mock -ModuleName ADManagement Test-RunningAsAdmin { $true }
+            Mock -ModuleName ADManagement Show-OpenFileDialog { $null }
+            @('6', '', 'Q') | ForEach-Object { $global:InputQueue.Enqueue($_) }
+            Start-ADManagement
+            $text = $global:HostOutput -join "`n"
+            $text | Should -Match 'Windows 不允許從檔案總管把檔案拖進這個視窗'
+            $text | Should -Match 'Shift \+ 右鍵'
+        }
+
+        It '貼上的路徑前後有引號也可以' {
+            $csv = Join-Path $TestDrive 'q.csv'
+            [System.IO.File]::WriteAllText($csv, "群組,成員`r`nFinance-RW,dave`r`n", (New-Object System.Text.UTF8Encoding($true)))
+            @('6', "`"$csv`"", '3', 'B', 'Q') | ForEach-Object { $global:InputQueue.Enqueue($_) }
+            Start-ADManagement
+            ($global:HostOutput -join "`n") | Should -Match '工作表「CSV」：1 列（加入成員）'
+        }
+
+        It '選擇檔案視窗無法開啟時（例如沒有圖形介面）會提示改輸入路徑，不會中斷' {
+            $r = InModuleScope ADManagement { Show-OpenFileDialog }
+            if ($IsWindows) { Set-ItResult -Skipped -Because '在 Windows 上會真的開啟視窗' }
+            $r | Should -BeNullOrEmpty
+            ($global:HostOutput -join "`n") | Should -Match '無法開啟選擇檔案視窗'
+        }
+
         It '單筆新增群組：取消時不做任何變更' {
             @('1', 'Test-G', '', 'OU=Groups,DC=corp,DC=local', '2', '1', '描述', '', 'alice', '', 'B', 'Q') | ForEach-Object { $global:InputQueue.Enqueue($_) }
             Start-ADManagement

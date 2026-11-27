@@ -1476,12 +1476,88 @@ function Invoke-MoveForm {
     [void](Invoke-PlanReview -Plan $plan -Title '搬移物件')
 }
 
+function Test-RunningAsAdmin {
+    <# 是否以「系統管理員身分」執行（非 Windows 或無法判斷時回傳 $false） #>
+    try {
+        $id = [System.Security.Principal.WindowsIdentity]::GetCurrent()
+        return (New-Object System.Security.Principal.WindowsPrincipal($id)).IsInRole([System.Security.Principal.WindowsBuiltInRole]::Administrator)
+    }
+    catch { return $false }
+}
+
+function Show-OpenFileDialog {
+    <#
+        開啟 Windows 的「選擇檔案」視窗，回傳選擇的檔案路徑（取消時回傳 $null）。
+        以系統管理員身分執行時，Windows 不允許從檔案總管把檔案拖進視窗，用這個視窗就能選檔。
+    #>
+    param(
+        [string]$Title = '選擇檔案',
+        [string]$Filter = 'Excel 或 CSV (*.xlsx;*.xlsm;*.csv)|*.xlsx;*.xlsm;*.csv|所有檔案 (*.*)|*.*',
+        [string]$InitialDirectory = ''
+    )
+    $code = {
+        param($Title, $Filter, $Dir)
+        $ErrorActionPreference = 'Stop'
+        Add-Type -AssemblyName System.Windows.Forms
+        # 用一個置頂的隱藏視窗當擁有者，選擇檔案視窗才會出現在最上層，不會被主控台蓋住
+        $owner = New-Object System.Windows.Forms.Form
+        $owner.TopMost = $true
+        $dlg = New-Object System.Windows.Forms.OpenFileDialog
+        $dlg.Title = $Title
+        $dlg.Filter = $Filter
+        $dlg.Multiselect = $false
+        if ($Dir -and [System.IO.Directory]::Exists($Dir)) { $dlg.InitialDirectory = $Dir }
+        try {
+            if ($dlg.ShowDialog($owner) -eq [System.Windows.Forms.DialogResult]::OK) { $dlg.FileName }
+        }
+        finally { $dlg.Dispose(); $owner.Dispose() }
+    }
+    try {
+        # 檔案視窗需要 STA 執行緒；Windows PowerShell 5.1 預設就是，其他情況另開一個 STA 執行環境
+        if ([System.Threading.Thread]::CurrentThread.GetApartmentState() -eq [System.Threading.ApartmentState]::STA) {
+            return (& $code $Title $Filter $InitialDirectory)
+        }
+        $rs = [runspacefactory]::CreateRunspace()
+        $rs.ApartmentState = [System.Threading.ApartmentState]::STA
+        $rs.Open()
+        $ps = [powershell]::Create()
+        $ps.Runspace = $rs
+        [void]$ps.AddScript($code.ToString()).AddArgument($Title).AddArgument($Filter).AddArgument($InitialDirectory)
+        try {
+            $out = @($ps.Invoke())
+            if ($ps.HadErrors -and $ps.Streams.Error.Count -gt 0) { throw $ps.Streams.Error[0].Exception }
+            return ($out | Select-Object -First 1)
+        }
+        finally { $ps.Dispose(); $rs.Dispose() }
+    }
+    catch {
+        Write-Status "無法開啟選擇檔案視窗（$($_.Exception.Message)），請改為輸入或貼上檔案路徑。" -Level Warn
+        return $null
+    }
+}
+
 function Read-FilePath {
-    param([string]$Prompt, [string]$Default = '')
-    $hint = if ($Default) { "（直接按 Enter = $Default）" } else { '（直接按 Enter 返回）' }
-    $p = (Read-Choice "$Prompt$hint").Trim('"')
-    if (-not $p) { $p = $Default }
-    if (-not $p) { return $null }
+    <#
+        讀取檔案路徑：可以輸入 / 貼上路徑、拖曳檔案進視窗，或直接按 Enter 開啟「選擇檔案」視窗。
+        有預設值時：直接按 Enter 使用預設值，輸入 O 開啟選擇檔案視窗。輸入 B 返回。
+    #>
+    param([string]$Prompt, [string]$Default = '', [string]$DialogTitle = '選擇檔案',
+        [string]$Filter = 'Excel 或 CSV (*.xlsx;*.xlsm;*.csv)|*.xlsx;*.xlsm;*.csv|所有檔案 (*.*)|*.*')
+    if (Test-RunningAsAdmin) {
+        Write-Status '目前以系統管理員身分執行：Windows 不允許從檔案總管把檔案拖進這個視窗，請用「選擇檔案」視窗，或貼上路徑。' -Level Hint
+        Write-Status '（複製路徑：在檔案上按 Shift + 右鍵 >「複製路徑」，再到這裡按右鍵貼上）' -Level Hint
+    }
+    $hint = if ($Default) { "（直接按 Enter = $Default；輸入 O 開啟選擇檔案視窗；輸入 B 返回）" } else { '（直接按 Enter 開啟選擇檔案視窗；輸入 B 返回）' }
+    $p = (Read-Choice "$Prompt$hint").Trim().Trim('"').Trim("'")
+    if ($p -match '^(b|q)$') { return $null }
+    if (-not $p -and $Default) { $p = $Default }
+    elseif (-not $p -or $p -ieq 'o') {
+        Write-Status '開啟選擇檔案視窗中...（如果沒有看到，請看看工作列，視窗可能在其他視窗後面）' -Level Hint
+        $start = if ($Default) { Split-Path -Path $Default -Parent } else { [Environment]::GetFolderPath('Desktop') }
+        $p = Show-OpenFileDialog -Title $DialogTitle -Filter $Filter -InitialDirectory $start
+        if (-not $p) { Write-Status '沒有選擇檔案。' -Level Hint; return $null }
+        Write-Status "已選擇：$p" -Level Info
+    }
     if (-not (Test-Path -LiteralPath $p)) { Write-Status "找不到檔案：$p" -Level Error; return $null }
     return $p
 }
@@ -1489,7 +1565,7 @@ function Read-FilePath {
 function Invoke-ImportMenu {
     Write-Section '從 Excel / CSV 批次匯入'
     Write-Status 'Excel 可包含「群組」「使用者」「群組成員」「移除成員」「搬移」工作表（可用 [7] 產生範本）；CSV 一次一種資料。' -Level Hint
-    $path = Read-FilePath -Prompt '請輸入檔案路徑（.xlsx 或 .csv，可直接把檔案拖進視窗）'
+    $path = Read-FilePath -Prompt '請輸入或貼上檔案路徑（.xlsx / .csv，也可以拖曳檔案進來）' -DialogTitle '選擇要匯入的 Excel 或 CSV'
     if (-not $path) { return }
     try { $book = Import-Spreadsheet -Path $path }
     catch { Write-Status "讀取失敗：$($_.Exception.Message)" -Level Error; return }
@@ -1556,7 +1632,7 @@ function Invoke-TemplateMenu {
 function Invoke-UndoMenu {
     Write-Section '用還原清單復原'
     Write-Status '還原清單是每次執行後自動產生的 CSV（檔名：還原清單_日期時間.csv）。' -Level Hint
-    $path = Read-FilePath -Prompt '請輸入還原清單路徑' -Default $script:Mgmt.LastUndoPath
+    $path = Read-FilePath -Prompt '請輸入還原清單路徑' -Default $script:Mgmt.LastUndoPath -DialogTitle '選擇還原清單' -Filter '還原清單 (還原清單_*.csv)|還原清單_*.csv|CSV (*.csv)|*.csv|所有檔案 (*.*)|*.*'
     if (-not $path) { return }
     try { $plan = New-UndoPlan -Path $path }
     catch { Write-Status "讀取還原清單失敗：$($_.Exception.Message)" -Level Error; return }
