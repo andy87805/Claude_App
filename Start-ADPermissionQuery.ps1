@@ -163,7 +163,14 @@ if ($LogPath) { $opt['LogPath'] = $LogPath }
 Set-ADPermissionQueryOption @opt
 
 if ($withManagement) { Start-ADTool -Path $Path }
-else { Start-ADPermissionQuery -Path $Path }
+elseif ($QueryOnly) { Start-ADPermissionQuery -Path $Path }
+else {
+    # ADManagement.psm1 not found: tell the user why only the query part is shown
+    # (and point out a file with a similar name, e.g. "ADManagement.psm1.txt" saved by a browser).
+    $similar = @(Get-ChildItem -LiteralPath $PSScriptRoot -File -ErrorAction SilentlyContinue |
+        Where-Object { $_.Name -like 'ADManagement*' -or $_.Name -like 'ADManagement*.*' } | ForEach-Object { $_.Name })
+    Start-ADPermissionQuery -Path $Path -ManagementMissing -ManagementFolder $PSScriptRoot -SimilarFiles $similar
+}
 
 # Exit codes (used by the double-click launcher to keep the window open so the message can be read):
 #   0 = normal exit, 1 = a module file is missing or damaged, 2 = ActiveDirectory module (RSAT) not installed

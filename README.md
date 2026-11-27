@@ -237,6 +237,7 @@ Find-GroupFolderUsage -Group 'Finance-RW' -Path '\\fs01\share' -Depth 3
 
 | 狀況 | 處理方式 |
 | --- | --- |
+| 雙擊後直接進入查詢，沒有「查詢 / 管理」的選擇畫面 | 同一個資料夾中找不到 `ADManagement.psm1`。畫面上會說明原因：檔案沒有一起下載，或檔名被存成 `ADManagement.psm1.txt`（檔案總管 >「檢視」> 勾選「副檔名」就看得到）。把檔案放好或改好檔名後重新開啟 |
 | `未預期的屬性 'CmdletBinding'`、`運算式或陳述式中有未預期的 'param' 語彙基元` | 舊版啟動腳本在檔案開頭多了看不見的 BOM 字元（常見於從網頁複製貼上後存檔）。請重新下載最新的 `Start-ADPermissionQuery.ps1`；新版是純英文 ASCII 檔，不會再發生 |
 | `以 "1" 引數呼叫 "Create" 時發生例外狀況`，後面接一堆亂碼與剖析錯誤 | 舊版啟動腳本無法讀取存成 UTF-16（Unicode）的模組檔（例如用 Windows PowerShell 的 `>`、`Out-File` 或記事本「Unicode」存檔）。請重新下載最新的 `Start-ADPermissionQuery.ps1`，新版會自動判斷 UTF-8 / UTF-16 / ANSI |
 | `ADPermissionQuery.psm1 could not be read correctly` | 模組檔內容已損壞（通常是用錯誤的編碼開啟後又存檔），請重新下載 `ADPermissionQuery.psm1`，不要轉檔或另存 |

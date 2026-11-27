@@ -1825,6 +1825,22 @@ function Show-Banner {
     Write-Host '    任何清單都可以篩選、匯出；名稱可以只輸入一部分' -ForegroundColor DarkGray
 }
 
+function Show-ManagementMissingNotice {
+    <# 說明為什麼只啟動查詢功能（找不到管理模組 ADManagement.psm1） #>
+    param([string]$Folder, [string[]]$SimilarFiles = @())
+    Write-Host ''
+    $wrong = @($SimilarFiles | Where-Object { $_ -ne 'ADManagement.psm1' })
+    if ($wrong.Count -gt 0) {
+        Write-Status "找到「$($wrong -join '」、「')」，但檔名不正確，所以目前只有查詢功能。" -Level Warn
+        Write-Status '請把檔名改成 ADManagement.psm1 後重新開啟。（看不到 .txt 等副檔名時：檔案總管 >「檢視」> 勾選「副檔名」）' -Level Hint
+    }
+    else {
+        Write-Status '目前只有查詢功能：這個資料夾中沒有管理模組 ADManagement.psm1。' -Level Warn
+        Write-Status '要使用管理功能（新增群組 / 使用者、加入成員、Excel 匯入），請把 ADManagement.psm1 放到：' -Level Hint
+        Write-Status "  $Folder" -Level Hint
+    }
+}
+
 function Test-ADModuleAvailable {
     <# 檢查 ActiveDirectory 模組；沒有時顯示安裝說明 #>
     if (Get-Command -Name Get-ADUser -ErrorAction SilentlyContinue) { return $true }
@@ -1864,9 +1880,17 @@ function Start-ADPermissionQuery {
         直接查詢這個路徑的權限（查完回到主選單）。
     #>
     [CmdletBinding()]
-    param([string]$Path, [switch]$Embedded)
+    param(
+        [string]$Path,
+        [switch]$Embedded,
+        # 啟動腳本找不到 ADManagement.psm1 時傳入，用來說明為什麼只有查詢功能
+        [switch]$ManagementMissing,
+        [string]$ManagementFolder,
+        [string[]]$SimilarFiles = @()
+    )
 
     if (-not $Embedded) { Show-Banner }
+    if ($ManagementMissing) { Show-ManagementMissingNotice -Folder $ManagementFolder -SimilarFiles $SimilarFiles }
 
     if (-not (Test-ADModuleAvailable)) { return }
 

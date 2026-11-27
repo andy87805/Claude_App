@@ -136,6 +136,7 @@ Describe '啟動腳本：同時有管理模組' {
         $out = & $Pwsh -NoLogo -NoProfile -NonInteractive -Command "& '$script' -NoLog -QueryOnly" 2>&1 | Out-String
         $out | Should -Match 'AD 權限查詢工具（唯讀，不會修改 AD）'
         $out | Should -Not -Match '查詢與管理工具'
+        $out | Should -Not -Match '目前只有查詢功能'
     }
 }
 
@@ -164,6 +165,28 @@ Describe '雙擊啟動檔 AD工具.cmd' {
         Remove-Item -LiteralPath (Join-Path $dir 'ADPermissionQuery.psm1')
         & $Pwsh -NoLogo -NoProfile -ExecutionPolicy Bypass -File (Join-Path $dir 'Start-ADPermissionQuery.ps1') -NoLog 2>&1 | Out-Null
         $LASTEXITCODE | Should -Be 1
+    }
+}
+
+Describe '啟動腳本：沒有管理模組時說明原因' {
+    It '資料夾中沒有 ADManagement.psm1：提示要放到哪裡' {
+        $dir = New-LauncherCopy -Kind 'original'
+        $r = Invoke-Launcher -Dir $dir
+        $r.Text | Should -Match '目前只有查詢功能：這個資料夾中沒有管理模組 ADManagement\.psm1'
+        $r.Text | Should -Match ([regex]::Escape($dir))
+    }
+    It '檔名被存成 ADManagement.psm1.txt：指出檔名不正確' {
+        $dir = New-LauncherCopy -Kind 'original'
+        Copy-Item -LiteralPath (Join-Path $Root 'ADManagement.psm1') -Destination (Join-Path $dir 'ADManagement.psm1.txt')
+        $r = Invoke-Launcher -Dir $dir
+        $r.Text | Should -Match '找到「ADManagement\.psm1\.txt」，但檔名不正確'
+        $r.Text | Should -Not -Match '查詢與管理工具'
+    }
+    It '有管理模組時不提示' {
+        $dir = New-LauncherCopy -Kind 'original'
+        Copy-Item -LiteralPath (Join-Path $Root 'ADManagement.psm1') -Destination $dir
+        $r = Invoke-Launcher -Dir $dir
+        $r.Text | Should -Not -Match '目前只有查詢功能'
     }
 }
 
