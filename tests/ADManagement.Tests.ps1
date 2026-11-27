@@ -63,6 +63,17 @@ Describe 'ADManagement' {
         Mock -ModuleName ADManagement Remove-ADGroupMember { $global:Changes.Add([pscustomobject]@{ Cmd = 'Remove-ADGroupMember'; Group = [string]$Identity; Member = [string](@($Members)[0]) }) }
         Mock -ModuleName ADManagement Remove-ADUser { $global:Changes.Add([pscustomobject]@{ Cmd = 'Remove-ADUser'; Identity = [string]$Identity }) }
         Mock -ModuleName ADManagement Remove-ADGroup { $global:Changes.Add([pscustomobject]@{ Cmd = 'Remove-ADGroup'; Identity = [string]$Identity }) }
+        Mock -ModuleName ADManagement Move-ADObject {
+            $global:Changes.Add([pscustomobject]@{ Cmd = 'Move-ADObject'; Identity = [string]$Identity; TargetPath = [string]$TargetPath })
+            # 更新假 AD 中的位置，還原測試才看得到搬移後的狀態
+            foreach ($o in @($global:FakeAD.Values)) {
+                if ($o.objectGUID -eq [string]$Identity) {
+                    $global:FakeAD.Remove($o.distinguishedName)
+                    $o.distinguishedName = "CN=$($o.name),$TargetPath"
+                    $global:FakeAD[$o.distinguishedName] = $o
+                }
+            }
+        }
 
         $global:Pw = New-TestSecure 'Welcome#2026'
     }
@@ -71,7 +82,7 @@ Describe 'ADManagement' {
         It '產生的範本是標準的 .xlsx，可以再讀回來' {
             $f = New-ImportTemplate -Path (Join-Path $TestDrive 'tpl.xlsx')
             $book = Import-Spreadsheet -Path $f
-            @($book.Keys) | Should -Be @('群組', '使用者', '群組成員', '移除成員', '說明')
+            @($book.Keys) | Should -Be @('群組', '使用者', '群組成員', '移除成員', '搬移', '說明')
             $g = @($book['群組'])[0]
             $g.'群組名稱*' | Should -Be '財務部-檔案讀寫'
             $g.'OU*' | Should -Be 'OU=Groups,DC=corp,DC=local'
@@ -79,7 +90,7 @@ Describe 'ADManagement' {
             @($book['說明']).Count | Should -BeGreaterThan 5
             if ($global:Python) {
                 $out = & $global:Python.Source -c "import openpyxl,sys; wb=openpyxl.load_workbook(sys.argv[1]); print('|'.join(wb.sheetnames)); print(wb['使用者']['A1'].value, wb['使用者']['A1'].font.b)" $f
-                $out[0] | Should -Be '群組|使用者|群組成員|移除成員|說明'
+                $out[0] | Should -Be '群組|使用者|群組成員|移除成員|搬移|說明'
                 $out[1] | Should -Be '帳號* True'
             }
         }
@@ -311,11 +322,131 @@ wb.save(sys.argv[1])
             New-ChangePlan -GroupRows @(New-Row @{ Source = 'A'; Name = 'G1'; Path = 'OU=Groups,DC=corp,DC=local'; Members = 'alice' }) `
                 -UserRows @(New-Row @{ Source = 'B'; SamAccountName = 'u1'; Path = 'OU=Users,DC=corp,DC=local'; MemberOf = 'G1' }) `
                 -AddMemberRows @(New-Row @{ Source = 'C'; Group = 'Finance-RW'; Member = 'dave' }) `
-                -RemoveMemberRows @(New-Row @{ Source = 'D'; Group = 'Finance-RO'; Member = 'dave' }) -Password $global:Pw | Out-Null
-            foreach ($c in 'New-ADGroup', 'New-ADUser', 'Add-ADGroupMember', 'Remove-ADGroupMember', 'Remove-ADUser', 'Remove-ADGroup') {
+                -RemoveMemberRows @(New-Row @{ Source = 'D'; Group = 'Finance-RO'; Member = 'dave' }) `
+                -MoveRows @(New-Row @{ Source = 'E'; Object = 'bob'; SourceOU = '台北'; TargetOU = '台北/財務部' }) -Password $global:Pw | Out-Null
+            foreach ($c in 'New-ADGroup', 'New-ADUser', 'Add-ADGroupMember', 'Remove-ADGroupMember', 'Remove-ADUser', 'Remove-ADGroup', 'Move-ADObject') {
                 Should -Invoke -ModuleName ADManagement $c -Times 0 -Exactly
             }
             $global:Changes.Count | Should -Be 0
+        }
+    }
+
+
+    Context '搬移物件' {
+        It '預覽：查出實際位置；不在 Excel 填的 OU 時標示「需確認」' {
+            Add-FakeAD (New-FakeADObject user 'alice2' 'Alice Wang' 'CN=Alice Wang,OU=台北,DC=corp,DC=local' 'S-1-5-21-9-77')
+            (Find-FakeAD 'jdoe').ProtectedFromAccidentalDeletion = $true
+            $rows = @(
+                New-Row @{ Source = 'A'; Object = 'bob'; TargetOU = '台北/財務部/帳號' }
+                New-Row @{ Source = 'B'; Object = 'carol'; SourceOU = 'Users'; TargetOU = '台北/財務部/帳號' }
+                New-Row @{ Source = 'C'; Object = 'dave'; SourceOU = '台北/業務部'; TargetOU = '台北/財務部/帳號' }
+                New-Row @{ Source = 'D'; Object = 'PC01'; TargetOU = 'Computers' }
+                New-Row @{ Source = 'E'; Object = 'nobody'; TargetOU = '台北' }
+                New-Row @{ Source = 'F'; Object = 'Finance-RO'; TargetOU = '台北/不存在' }
+                New-Row @{ Source = 'G'; Object = 'CORP\bob'; TargetOU = '台北' }
+                New-Row @{ Source = 'H'; Object = 'jdoe'; TargetOU = '台北' }
+                New-Row @{ Source = 'I'; Object = 'Finance-RW'; TargetOU = '台北' }
+                New-Row @{ Source = 'J'; Object = 'alice'; TargetOU = '台北' }
+                New-Row @{ Source = 'K'; Object = 'Alice Wang'; TargetOU = '台北/財務部' }
+                New-Row @{ Source = 'L'; Object = 'carol'; TargetOU = '台北' }
+                New-Row @{ Source = 'M'; Object = 'PC02'; SourceOU = '台北/不存在'; TargetOU = '台北' }
+            )
+            $plan = New-ChangePlan -MoveRows $rows
+            $s = @{}; foreach ($p in $plan) { $s[$p.Source] = $p }
+            $s['A'].Status | Should -Be '將執行'
+            $s['A'].Target | Should -Be 'Bob Lin（bob，使用者）'
+            $s['A'].Detail | Should -Be '從 Users → 到 台北/財務部/帳號'
+            $s['A'].Data.TargetPath | Should -Be 'OU=帳號,OU=財務部,OU=台北,DC=corp,DC=local'
+            $s['B'].Status | Should -Be '將執行'
+            $s['C'].Status | Should -Be '需確認'
+            $s['C'].Reason | Should -Be 'Excel 填的目前 OU 是「台北/業務部」，但物件實際在「Users」'
+            $s['D'].Status | Should -Be '略過'
+            $s['D'].Reason | Should -Be '已經在目標 OU'
+            $s['D'].Target | Should -Be 'PC01（PC01$，電腦）'
+            $s['E'].Reason | Should -Be '找不到物件：nobody'
+            $s['F'].Reason | Should -Match '目標 OU 有誤：台北/不存在，找不到「不存在」這一層'
+            $s['G'].Reason | Should -Be '與 A 重複'
+            $s['H'].Reason | Should -Match '防止意外刪除'
+            $s['I'].Status | Should -Be '將執行'
+            $s['I'].Target | Should -Be 'Finance-RW（群組）'
+            $s['J'].Reason | Should -Be '目標 OU 已有名稱為「Alice Wang」的物件'
+            $s['K'].Reason | Should -Match '找到 2 個名稱為「Alice Wang」的物件（位置：Users、台北），請改填帳號或 DN'
+            $s['L'].Reason | Should -Be '與 B 重複'
+            $s['M'].Status | Should -Be '需確認'
+            $s['M'].Reason | Should -Match 'Excel 填的目前 OU「台北/不存在」不存在，物件實際在「Computers」'
+        }
+        It '不能搬移這次才要新增的物件' {
+            $plan = New-ChangePlan -UserRows @(New-Row @{ Source = 'A'; SamAccountName = 'brand.new'; Path = 'Users' }) `
+                -MoveRows @(New-Row @{ Source = 'B'; Object = 'brand.new'; TargetOU = '台北' }) -Password $global:Pw
+            ($plan | Where-Object Source -eq 'B').Reason | Should -Be '這是這次要新增的物件，請直接在新增時填目標 OU'
+        }
+        It 'Excel 標題可寫「目前OU」「目標OU」（不分空白），工作表「搬移」會被辨識' {
+            $rows = @([pscustomobject]@{ __Row = 2; '物件*' = 'bob'; '目前OU' = 'Users'; '目標OU*' = '台北' })
+            $c = ConvertTo-FieldRows -Rows $rows -Kind Move -SheetName '搬移'
+            $c.Rows[0].Object | Should -Be 'bob'
+            $c.Rows[0].SourceOU | Should -Be 'Users'
+            $c.Rows[0].TargetOU | Should -Be '台北'
+            $c.Unknown | Should -BeNullOrEmpty
+            InModuleScope ADManagement { Get-SheetKind '搬移' } | Should -Be 'Move'
+        }
+        It '執行：搬移排在最後；還原清單可以搬回原本的 OU' {
+            $plan = New-ChangePlan -AddMemberRows @(New-Row @{ Source = 'A'; Group = 'Finance-RO'; Member = 'bob' }) `
+                -MoveRows @(New-Row @{ Source = 'B'; Object = 'bob'; TargetOU = '台北/財務部/帳號' })
+            $bobGuid = (Find-FakeAD 'bob').objectGUID
+            $res = InModuleScope ADManagement -Parameters @{ Plan = $plan; F = $TestDrive } { param($Plan, $F) Invoke-ADChangePlan -Plan $Plan -Folder $F }
+            $global:Changes.Cmd | Should -Be @('Add-ADGroupMember', 'Move-ADObject')
+            $global:Changes[0].Member | Should -Be 'CN=Bob Lin,OU=Users,DC=corp,DC=local'   # 成員變更用搬移前的 DN
+            $global:Changes[1].Identity | Should -Be $bobGuid
+            $global:Changes[1].TargetPath | Should -Be 'OU=帳號,OU=財務部,OU=台北,DC=corp,DC=local'
+            $undo = @(Import-Csv -LiteralPath $res.UndoPath)
+            $undo[0].'動作' | Should -Be '搬移物件'
+            $undo[0].'目標 OU' | Should -Be 'OU=Users,DC=corp,DC=local'
+            $undoPlan = New-UndoPlan -Path $res.UndoPath
+            $mv = $undoPlan | Where-Object Action -eq '搬移物件'
+            $mv.Status | Should -Be '將執行'
+            $mv.Detail | Should -Be '從 台北/財務部/帳號 → 到 Users'
+        }
+        It '互動：不在指定 OU 的物件可以逐筆確認，只搬選擇「是」的' {
+            $global:HostOutput = New-Object System.Collections.Generic.List[string]
+            $global:HostLine = ''
+            $global:InputQueue = New-Object System.Collections.Generic.Queue[object]
+            foreach ($m in 'ADManagement', 'ADPermissionQuery') {
+                Mock -ModuleName $m Write-Host {
+                    if ($NoNewline) { $global:HostLine += [string]$Object }
+                    else { $global:HostOutput.Add($global:HostLine + [string]$Object); $global:HostLine = '' }
+                }
+                Mock -ModuleName $m Read-Host {
+                    $global:HostOutput.Add("[提問] $Prompt")      # 提示字也記錄下來，才能檢查問了什麼
+                    if ($global:InputQueue.Count -eq 0) { throw '測試輸入已用完' }
+                    $global:InputQueue.Dequeue()
+                }
+            }
+            Mock -ModuleName ADManagement Get-DefaultExportFolder { Join-Path $TestDrive 'out' }
+            Mock -ModuleName ADPermissionQuery Get-DefaultExportFolder { Join-Path $TestDrive 'out' }
+            $csv = Join-Path $TestDrive 'move.csv'
+            [System.IO.File]::WriteAllText($csv, "物件,目前 OU,目標 OU`r`nbob,台北/業務部,台北/財務部`r`ncarol,台北/業務部,台北/財務部`r`ndave,,台北/財務部`r`n", (New-Object System.Text.UTF8Encoding($true)))
+            @('6', $csv, '5', 'O', 'y', 'n', 'X', 'YES', 'Q') | ForEach-Object { $global:InputQueue.Enqueue($_) }
+            Start-ADManagement
+            $global:InputQueue.Count | Should -Be 0
+            $text = $global:HostOutput -join "`n"
+            $text | Should -Match '有 2 筆物件不在 Excel 填的「目前 OU」'
+            $text | Should -Match '「Bob Lin（bob，使用者）」目前在「Users」，要搬到「台北/財務部」嗎？'
+            $text | Should -Match '需確認 2'
+            $moved = @($global:Changes | Where-Object Cmd -eq 'Move-ADObject')
+            $moved.Count | Should -Be 2       # bob（確認搬）+ dave（沒填目前 OU，直接搬）；carol 選擇不搬
+            $moved.Identity | Should -Not -Contain (Find-FakeAD 'carol').objectGUID
+        }
+        It '互動：單筆搬移，可一次輸入多個物件' {
+            $global:InputQueue = New-Object System.Collections.Generic.Queue[object]
+            foreach ($m in 'ADManagement', 'ADPermissionQuery') {
+                Mock -ModuleName $m Write-Host { }
+                Mock -ModuleName $m Read-Host { if ($global:InputQueue.Count -eq 0) { throw '測試輸入已用完' }; $global:InputQueue.Dequeue() }
+            }
+            Mock -ModuleName ADManagement Get-DefaultExportFolder { Join-Path $TestDrive 'out2' }
+            @('5', 'bob;PC02', '台北/財務部', 'X', 'YES', 'Q') | ForEach-Object { $global:InputQueue.Enqueue($_) }
+            Start-ADManagement
+            $global:InputQueue.Count | Should -Be 0
+            @($global:Changes | Where-Object Cmd -eq 'Move-ADObject').Count | Should -Be 2
         }
     }
 
@@ -389,7 +520,7 @@ wb.save(sys.argv[1])
         It 'Excel 匯入：先預覽；輸入小寫 yes 不會執行，輸入大寫 YES 才執行' {
             $tpl = New-ImportTemplate -Path (Join-Path $TestDrive 'import.xlsx')
             @(
-                '5', $tpl                           # 批次匯入 → 檔案（範本每列都有 OU，不會詢問預設 OU）
+                '6', $tpl                           # 批次匯入 → 檔案（範本每列都有 OU，不會詢問預設 OU）
                 'Welcome#2026', 'Welcome#2026'      # 初始密碼兩次
                 'R', 'A'                            # 只看錯誤與略過 → 顯示全部
                 'X', 'yes'                          # 確認，但輸入小寫 → 取消

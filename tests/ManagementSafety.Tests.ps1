@@ -18,7 +18,7 @@ BeforeAll {
     }
 
     # 允許的「修改 AD」指令（還原用的刪除只針對還原清單中記錄的 ObjectGUID）
-    $script:AllowedChange = @('New-ADGroup', 'New-ADUser', 'Add-ADGroupMember', 'Remove-ADGroupMember', 'Remove-ADUser', 'Remove-ADGroup')
+    $script:AllowedChange = @('New-ADGroup', 'New-ADUser', 'Add-ADGroupMember', 'Remove-ADGroupMember', 'Move-ADObject', 'Remove-ADUser', 'Remove-ADGroup')
     $script:ChangeCommands = @($Commands | Where-Object {
             $n = $_.GetCommandName()
             $n -and $n -match '^(New|Add|Remove|Set|Move|Rename|Enable|Disable|Unlock|Clear|Reset|Restore|Grant|Revoke|Install|Uninstall)-AD'
@@ -30,11 +30,11 @@ Describe '管理模組安全檢查' {
         $ParseErrors | Should -BeNullOrEmpty
     }
 
-    It '只使用允許的修改指令（不會改密碼、搬移、改名、停用帳號、刪除其他物件）' {
+    It '只使用允許的修改指令（不會改密碼、改名、停用帳號、修改屬性、刪除其他物件）' {
         $names = @($ChangeCommands | ForEach-Object { $_.GetCommandName() } | Sort-Object -Unique)
         @($names | Where-Object { $_ -notin $AllowedChange }) | Should -BeNullOrEmpty
         $all = @($Commands | ForEach-Object { $_.GetCommandName() })
-        foreach ($bad in 'Set-Acl', 'Remove-ADObject', 'Set-ADAccountPassword', 'Invoke-Expression', 'Start-Process', 'Invoke-Command', 'Remove-Item') {
+        foreach ($bad in 'Set-Acl', 'Remove-ADObject', 'Set-ADAccountPassword', 'Set-ADUser', 'Set-ADGroup', 'Set-ADObject', 'Rename-ADObject', 'Disable-ADAccount', 'Invoke-Expression', 'Start-Process', 'Invoke-Command', 'Remove-Item') {
             $all | Should -Not -Contain $bad
         }
     }

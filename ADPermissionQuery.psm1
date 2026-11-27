@@ -1213,6 +1213,7 @@ function Get-CellColor {
         '^(備註|描述)$'      { return 'DarkGray' }
         '^(預覽結果|執行結果)$' {
             if ($Value -match '^(將執行|成功)') { return 'Green' }
+            if ($Value -eq '需確認') { return 'Yellow' }
             if ($Value -match '^(錯誤|失敗)') { return 'Red' }
             return 'DarkGray'
         }

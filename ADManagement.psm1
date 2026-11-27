@@ -58,6 +58,11 @@ $script:FieldAliases = @{
         Group  = @('群組', '群組名稱', 'Group')
         Member = @('成員', '帳號', '成員帳號', 'Member')
     }
+    Move       = [ordered]@{
+        Object   = @('物件', '帳號', '名稱', '物件名稱', 'Object', 'Identity', 'SamAccountName', 'Name')
+        SourceOU = @('目前 OU', '來源 OU', '原 OU', '目前位置', 'SourceOU', 'From')
+        TargetOU = @('目標 OU', '新 OU', '搬到', 'TargetOU', 'To', 'TargetPath')
+    }
 }
 
 # 工作表名稱 → 資料種類
@@ -66,6 +71,7 @@ $script:SheetKinds = [ordered]@{
     User          = @('使用者', 'Users', 'User', '新增使用者')
     AddMember     = @('群組成員', '加入成員', 'Members', 'AddMembers')
     RemoveMember  = @('移除成員', 'RemoveMembers')
+    Move          = @('搬移', '搬移物件', 'Move', 'MoveObjects')
 }
 
 # ---------------------------------------------------------------------------
@@ -288,16 +294,16 @@ function ConvertTo-FieldRows {
         依欄位對照表把資料列轉成標準欄位名稱。
         回傳 @{ Rows = 轉換後的列; Unknown = 無法辨識的欄位名稱 }
     #>
-    param([object[]]$Rows, [ValidateSet('Group', 'User', 'Membership')][string]$Kind, [string]$SheetName = '')
+    param([object[]]$Rows, [ValidateSet('Group', 'User', 'Membership', 'Move')][string]$Kind, [string]$SheetName = '')
     $aliases = $script:FieldAliases[$Kind]
     $lookup = @{}
-    foreach ($field in $aliases.Keys) { foreach ($a in $aliases[$field]) { $lookup[$a.ToLowerInvariant()] = $field } }
+    foreach ($field in $aliases.Keys) { foreach ($a in $aliases[$field]) { $lookup[($a -replace '\s', '').ToLowerInvariant()] = $field } }
     $unknown = New-Object System.Collections.Generic.List[string]
     $map = @{}
     if ($Rows.Count -gt 0) {
         foreach ($p in $Rows[0].PSObject.Properties) {
             if ($p.Name -eq '__Row') { continue }
-            $key = ($p.Name -replace '[\*＊\s]+$', '').Trim().ToLowerInvariant()
+            $key = ($p.Name -replace '[\*＊\s]', '').ToLowerInvariant()
             if ($lookup.ContainsKey($key)) { $map[$p.Name] = $lookup[$key] } else { $unknown.Add($p.Name) }
         }
     }
@@ -374,6 +380,8 @@ function New-ImportTemplate {
             Rows = @(, @('wang.dm', '王', '大明', '王大明', "OU=Users,$DomainDN", '', 'wang.dm@example.com', '財務部', '專員', '', '', '#1234', '', 'E1001', 'alice', '新進人員', '到職日 2026-12-01', '', '是', 'FIN-FS-RW')) }
         @{ Name = '群組成員'; Header = @('群組*', '成員*'); Widths = @(26, 26); Rows = @(@('FIN-FS-RW', 'carol'), @('FIN-FS-RW', 'PC01')) }
         @{ Name = '移除成員'; Header = @('群組*', '成員*'); Widths = @(26, 26); Rows = @(, @('Old-Project-Team', 'dave')) }
+        @{ Name = '搬移'; Header = @('物件*', '目前 OU', '目標 OU*'); Widths = @(24, 30, 34)
+            Rows = @(@('chen.xm', '台北/業務部', '台北/財務部/帳號'), @('PC-FIN-01', '', '台北/財務部/電腦')) }
         @{ Name = '說明'; Header = @('項目', '說明'); Widths = @(18, 100)
             Rows = @(
                 , @('使用方式', '在要用的工作表填資料（第 1 列標題不要改），不需要的工作表可以刪除或留空。匯入時會先預覽，確認後輸入 YES 才會執行。')
@@ -390,6 +398,9 @@ function New-ImportTemplate {
                 , @('啟用', '是 / 否（空白 = 是）')
                 , @('初始密碼', '匯入時輸入一組共用的初始密碼（不會存在任何檔案），使用者第一次登入時必須變更')
                 , @('已存在的物件', '群組或帳號已存在時會略過，不會修改既有物件；但仍會處理該列要加入的成員 / 群組')
+                , @('搬移 物件', '填帳號（電腦可以只填名稱）、名稱或 DN；可以搬移使用者、群組、電腦')
+                , @('搬移 目前 OU', '可以空白。有填但物件不在這個 OU 時，會自動查出實際位置，並詢問你要不要照實際位置搬移')
+                , @('搬移 目標 OU', '要搬到哪個 OU，寫法和其他 OU 欄位相同（例如 台北/財務部/帳號）')
             ) }
     )
 
@@ -437,7 +448,8 @@ function New-ImportTemplate {
 # ---------------------------------------------------------------------------
 # 變更計畫（預覽 / dry run）—— 這一段只會「查詢」AD，不會修改任何東西
 # ---------------------------------------------------------------------------
-$script:ActionOrder = @{ '新增群組' = 1; '新增使用者' = 2; '加入成員' = 3; '移除成員' = 4; '刪除使用者' = 5; '刪除群組' = 6 }
+# 執行順序：搬移放最後，前面的成員變更才能用搬移前的 DN
+$script:ActionOrder = @{ '新增群組' = 1; '新增使用者' = 2; '加入成員' = 3; '移除成員' = 4; '刪除使用者' = 5; '刪除群組' = 6; '搬移物件' = 7 }
 $script:InvalidSamChars = '["/\\\[\]:;|=,+*?<>@]'
 
 function New-PlanContext {
@@ -912,6 +924,164 @@ function Add-MembershipPlan {
     }
 }
 
+function Get-ParentDN {
+    <# 去掉 DN 的第一段（物件本身），得到所在的 OU / 容器；會處理名稱中跳脫的字元 #>
+    param([string]$DN)
+    return ($DN -replace '^(?:[^,\\]|\\.)+,', '')
+}
+
+function ConvertTo-OUPathText {
+    <# 把 DN 轉成好讀的路徑：OU=帳號,OU=財務部,OU=台北,DC=corp,DC=local → 台北/財務部/帳號 #>
+    param([string]$DN)
+    if (-not $DN) { return '' }
+    $names = New-Object System.Collections.Generic.List[string]
+    foreach ($part in [regex]::Split($DN, '(?<!\\),')) {
+        if ($part.Trim() -match '^(?:OU|CN)=(.*)$') { $names.Insert(0, ($Matches[1] -replace '\\(.)', '$1')) }
+    }
+    if ($names.Count -eq 0) { return '（網域最上層）' }
+    return ($names -join '/')
+}
+
+function Test-SameDN {
+    param([string]$A, [string]$B)
+    if (-not $A -or -not $B) { return $false }
+    return (($A -replace ',\s+', ',').Trim() -ieq ($B -replace ',\s+', ',').Trim())
+}
+
+function Find-MoveObject {
+    <#
+        找出要搬移的物件：可填 DN、ObjectGUID、帳號（電腦可省略結尾的 $）或名稱。
+        回傳 @{ Object = @{ Name; Sam; DN; Guid; Class; Protected }; Error }（只查詢 AD）
+    #>
+    param($Ctx, [string]$Text)
+    $srv = Get-ADServerParam
+    $props = @('sAMAccountName', 'objectClass', 'objectGUID', 'name', 'distinguishedName', 'ProtectedFromAccidentalDeletion')
+    $t = "$Text".Trim()
+    $list = @()
+    try {
+        if ($t -match '^(CN|OU)=' -or $t -match '^[0-9a-fA-F]{8}-([0-9a-fA-F]{4}-){3}[0-9a-fA-F]{12}$') {
+            $list = @(Get-ADObject -Identity $t -Properties $props @srv -ErrorAction Stop)
+        }
+        else {
+            $sam = Get-SamFromInput $t
+            $list = @(Get-ADObject -Filter "sAMAccountName -eq '$(ConvertTo-LdapFilterValue $sam)'" -Properties $props @srv -ErrorAction Stop)
+            if ($list.Count -eq 0 -and -not $sam.EndsWith('$')) {
+                $list = @(Get-ADObject -Filter "sAMAccountName -eq '$(ConvertTo-LdapFilterValue ($sam + '$'))'" -Properties $props @srv -ErrorAction Stop)
+            }
+            if ($list.Count -eq 0) {
+                $list = @(Get-ADObject -Filter "Name -eq '$(ConvertTo-LdapFilterValue $t)'" -Properties $props @srv -ErrorAction Stop |
+                    Where-Object { [string](@($_.objectClass)[-1]) -in 'user', 'inetOrgPerson', 'group', 'computer' })
+            }
+        }
+    }
+    catch { $list = @() }
+    $list = @($list | Where-Object { $_ })
+    if ($list.Count -eq 0) { return @{ Object = $null; Error = "找不到物件：$t" } }
+    if ($list.Count -gt 1) {
+        $where = @($list | ForEach-Object { ConvertTo-OUPathText (Get-ParentDN ([string]$_.distinguishedName)) }) -join '、'
+        return @{ Object = $null; Error = "找到 $($list.Count) 個名稱為「$t」的物件（位置：$where），請改填帳號或 DN" }
+    }
+    $o = $list[0]
+    return @{
+        Object = @{
+            Name = [string]$o.name; Sam = [string]$o.sAMAccountName; DN = [string]$o.distinguishedName; Guid = [string]$o.objectGUID
+            Class = [string](@($o.objectClass)[-1]); Protected = [bool]$o.ProtectedFromAccidentalDeletion
+        }
+        Error  = ''
+    }
+}
+
+function Add-MovePlan {
+    <#
+        搬移物件的預覽：查出物件實際所在的 OU。
+        Excel 有填「目前 OU」但物件不在那裡時，標示為「需確認」，之後詢問使用者要不要照實際位置搬移。
+    #>
+    param($Ctx, [object[]]$Rows)
+    $classText = @{ user = '使用者'; inetOrgPerson = '使用者'; group = '群組'; computer = '電腦' }
+    $seen = @{}
+    foreach ($r in $Rows) {
+        $errors = New-Object System.Collections.Generic.List[string]
+        $skip = ''; $confirm = ''
+        $objText = "$($r.Object)".Trim()
+        $srcText = "$($r.SourceOU)".Trim()
+        $tgtText = "$($r.TargetOU)".Trim()
+        $obj = $null
+        $label = $objText
+
+        if (-not $objText) { $errors.Add('物件是空的') }
+        else {
+            $found = Find-MoveObject $Ctx $objText
+            if ($found.Error) {
+                $plannedKey = (Get-SamFromInput $objText).ToLowerInvariant()
+                if ($Ctx.Planned.ContainsKey($plannedKey)) { $errors.Add('這是這次要新增的物件，請直接在新增時填目標 OU') }
+                else { $errors.Add($found.Error) }
+            }
+            else { $obj = $found.Object }
+        }
+        if ($obj) {
+            $who = if ($obj.Sam -and $obj.Sam -ne $obj.Name) { "$($obj.Sam)，" } else { '' }
+            $ct = if ($classText.ContainsKey($obj.Class)) { $classText[$obj.Class] } else { $obj.Class }
+            $label = "$($obj.Name)（$who$ct）"
+            if (-not $classText.ContainsKey($obj.Class)) { $errors.Add("不支援搬移這種物件（$($obj.Class)），只能搬移使用者、群組、電腦") }
+            if ($obj.Protected) { $errors.Add('已開啟「防止意外刪除」，無法搬移（可在物件內容的「物件」頁籤取消勾選）') }
+            if ($seen.ContainsKey($obj.Guid)) { $errors.Add("與 $($seen[$obj.Guid]) 重複") }
+            else { $seen[$obj.Guid] = $r.Source }
+        }
+
+        $tgt = Resolve-OUPath $Ctx $tgtText
+        if (-not $tgtText) { $errors.Add('沒有填目標 OU') }
+        elseif ($tgt.Error) { $errors.Add("目標 OU 有誤：$($tgt.Display)，$($tgt.Error)") }
+        elseif (-not (Test-ADContainer $Ctx $tgt.DN)) { $errors.Add("目標 OU 不存在：$($tgt.DN)") }
+
+        $curParent = if ($obj) { Get-ParentDN $obj.DN } else { '' }
+        $curText = ConvertTo-OUPathText $curParent
+        $tgtPathText = if ($tgt.DN -and -not $tgt.Error) { ConvertTo-OUPathText $tgt.DN } else { $tgtText }
+
+        if ($errors.Count -eq 0) {
+            if (Test-SameDN $curParent $tgt.DN) { $skip = '已經在目標 OU' }
+            elseif ((Test-NameConflict $Ctx $obj.Name $tgt.DN) -or $Ctx.PlannedCN.ContainsKey("$($tgt.DN)|$($obj.Name)".ToLowerInvariant())) {
+                $errors.Add("目標 OU 已有名稱為「$($obj.Name)」的物件")
+            }
+            elseif ($srcText) {
+                $src = Resolve-OUPath $Ctx $srcText
+                if ($src.Error -or -not $src.DN) { $confirm = "Excel 填的目前 OU「$srcText」不存在，物件實際在「$curText」" }
+                elseif (-not (Test-SameDN $src.DN $curParent)) { $confirm = "Excel 填的目前 OU 是「$(ConvertTo-OUPathText $src.DN)」，但物件實際在「$curText」" }
+            }
+        }
+
+        $detail = if ($obj) { "從 $curText → 到 $tgtPathText" } else { "到 $tgtPathText" }
+        $item = New-PlanItem -Source $r.Source -Action '搬移物件' -Target $label -Detail $detail -Errors $errors.ToArray() -Skip $skip -Data @{
+            Identity = $(if ($obj) { $obj.Guid } else { '' }); TargetPath = $tgt.DN; SourcePath = $curParent
+            Name = $(if ($obj) { $obj.Name } else { $objText }); Sam = $(if ($obj) { $obj.Sam } else { '' })
+            ActualText = $curText; TargetText = $tgtPathText
+        }
+        if ($confirm -and $item.Status -eq '將執行') { $item.Status = '需確認'; $item.Reason = $confirm }
+        $Ctx.Items.Add($item)
+        if ($item.Status -eq '將執行' -or $item.Status -eq '需確認') {
+            $Ctx.PlannedCN["$($tgt.DN)|$($obj.Name)".ToLowerInvariant()] = $r.Source
+        }
+    }
+}
+
+function Confirm-PendingMove {
+    <# 物件不在 Excel 填的 OU 時，詢問要不要照實際位置搬移（全部 / 全部不搬 / 逐筆確認）。只改變預覽狀態，不會修改 AD #>
+    param([object[]]$Plan)
+    $pending = @($Plan | Where-Object Status -eq '需確認')
+    if ($pending.Count -eq 0) { return }
+    Show-Table -Rows $pending -Kind Plan -Title "有 $($pending.Count) 筆物件不在 Excel 填的「目前 OU」"
+    Write-Status '已幫你查出它們實際所在的 OU（見「說明」欄）。要照實際位置搬到目標 OU 嗎？' -Level Warn
+    Show-Options @('Y|全部照實際位置搬移', 'N|全部不搬（略過）', 'O|逐筆確認')
+    $c = (Read-Choice '請選擇（直接按 Enter = 全部不搬）').ToUpperInvariant()
+    foreach ($p in $pending) {
+        $yes = $false
+        if ($c -eq 'Y') { $yes = $true }
+        elseif ($c -eq 'O') { $yes = Read-YesNo -Prompt "「$($p.Target)」目前在「$($p.Data.ActualText)」，要搬到「$($p.Data.TargetText)」嗎？" -Default $false }
+        if ($yes) { $p.Status = '將執行'; $p.Reason = "已確認：從實際位置「$($p.Data.ActualText)」搬移" }
+        else { $p.Status = '略過'; $p.Reason = "不在 Excel 填的 OU，選擇不搬（實際在「$($p.Data.ActualText)」）" }
+    }
+    Write-PlanSummary -Plan $Plan
+}
+
 function Complete-Plan {
     param($Ctx)
     $n = 0
@@ -932,10 +1102,11 @@ function New-ChangePlan {
         [object[]]$UserRows = @(),
         [object[]]$AddMemberRows = @(),
         [object[]]$RemoveMemberRows = @(),
+        [object[]]$MoveRows = @(),
         [securestring]$Password,
         [string]$DefaultOU
     )
-    $total = $GroupRows.Count + $UserRows.Count + $AddMemberRows.Count + $RemoveMemberRows.Count
+    $total = $GroupRows.Count + $UserRows.Count + $AddMemberRows.Count + $RemoveMemberRows.Count + $MoveRows.Count
     if ($total -gt $script:MaxBatchRows) { throw "資料超過 $($script:MaxBatchRows) 列，請分批匯入。" }
     $ctx = New-PlanContext -Password $Password -DefaultOU $DefaultOU
     Add-GroupPlan $ctx $GroupRows
@@ -943,6 +1114,7 @@ function New-ChangePlan {
     [object[]]$memberRows = [object[]]$ctx.MemberRows.ToArray() + [object[]]@($AddMemberRows)
     Add-MembershipPlan $ctx $memberRows 'Add'
     Add-MembershipPlan $ctx $RemoveMemberRows 'Remove'
+    Add-MovePlan $ctx $MoveRows
     Write-QueryLog -Action '建立變更預覽' -Target "共 $($ctx.Items.Count) 筆"
     return (Complete-Plan $ctx)
 }
@@ -963,6 +1135,7 @@ function New-UndoPlan {
     $srv = Get-ADServerParam
     $addRows = New-Object System.Collections.Generic.List[object]
     $removeRows = New-Object System.Collections.Generic.List[object]
+    $moveRows = New-Object System.Collections.Generic.List[object]
     foreach ($r in $rows) {
         $src = "還原清單!$($r.__Row)"
         $act = "$($r.'動作')"
@@ -984,10 +1157,15 @@ function New-UndoPlan {
             }
             '移除成員' { $removeRows.Add([pscustomobject]@{ Source = $src; Group = $r.'群組'; Member = $r.'成員' }) }
             '加入成員' { $addRows.Add([pscustomobject]@{ Source = $src; Group = $r.'群組'; Member = $r.'成員' }) }
+            '搬移物件' {
+                $obj = if ("$($r.ObjectGUID)".Trim()) { "$($r.ObjectGUID)".Trim() } else { "$($r.'對象')" }
+                $moveRows.Add([pscustomobject]@{ Source = $src; Object = $obj; SourceOU = ''; TargetOU = $r.'目標 OU' })
+            }
             default { $ctx.Items.Add((New-PlanItem -Source $src -Action "$act" -Target "$($r.'對象')" -Detail '' -Errors @("無法辨識的動作「$act」"))) }
         }
     }
     Add-MembershipPlan $ctx $addRows.ToArray() 'Add'
+    Add-MovePlan $ctx $moveRows.ToArray()
     Add-MembershipPlan $ctx $removeRows.ToArray() 'Remove'
     Write-QueryLog -Action '建立還原預覽' -Target $Path
     return (Complete-Plan $ctx)
@@ -1000,13 +1178,14 @@ function Save-UndoList {
     # 反向順序：最後做的最先復原
     for ($i = $Done.Count - 1; $i -ge 0; $i--) {
         $it = $Done[$i]
-        if ($it.Action -notin '新增群組', '新增使用者', '加入成員', '移除成員') { continue }
-        $e = [ordered]@{ '動作' = ''; '群組' = ''; '成員' = ''; '對象' = ''; 'ObjectGUID' = ''; '原始動作' = $it.Action; '執行時間' = $now }
+        if ($it.Action -notin '新增群組', '新增使用者', '加入成員', '移除成員', '搬移物件') { continue }
+        $e = [ordered]@{ '動作' = ''; '群組' = ''; '成員' = ''; '對象' = ''; 'ObjectGUID' = ''; '目標 OU' = ''; '原始動作' = $it.Action; '執行時間' = $now }
         switch ($it.Action) {
             '新增群組'   { $e['動作'] = '刪除群組'; $e['對象'] = $it.Data.SamAccountName; $e['ObjectGUID'] = $it.CreatedGuid }
             '新增使用者' { $e['動作'] = '刪除使用者'; $e['對象'] = $it.Data.SamAccountName; $e['ObjectGUID'] = $it.CreatedGuid }
             '加入成員'   { $e['動作'] = '移除成員'; $e['群組'] = $it.Data.GroupSam; $e['成員'] = $it.Data.MemberSam; $e['對象'] = $it.Data.GroupSam }
             '移除成員'   { $e['動作'] = '加入成員'; $e['群組'] = $it.Data.GroupSam; $e['成員'] = $it.Data.MemberSam; $e['對象'] = $it.Data.GroupSam }
+            '搬移物件'   { $e['動作'] = '搬移物件'; $e['對象'] = $it.Data.Name; $e['ObjectGUID'] = $it.Data.Identity; $e['目標 OU'] = $it.Data.SourcePath }
         }
         $entries.Add([pscustomobject]$e)
     }
@@ -1046,6 +1225,7 @@ function Invoke-ADChangeItem {
         }
         '加入成員' { Add-ADGroupMember -Identity $d.Group -Members $d.Member -ErrorAction Stop @srv; return $null }
         '移除成員' { Remove-ADGroupMember -Identity $d.Group -Members $d.Member -Confirm:$false -ErrorAction Stop @srv; return $null }
+        '搬移物件' { Move-ADObject -Identity $d.Identity -TargetPath $d.TargetPath -Confirm:$false -ErrorAction Stop @srv; return $null }
         '刪除使用者' { Remove-ADUser -Identity $d.Identity -Confirm:$false -ErrorAction Stop @srv; return $null }
         '刪除群組' { Remove-ADGroup -Identity $d.Identity -Confirm:$false -ErrorAction Stop @srv; return $null }
         default { throw "不支援的動作：$($Item.Action)" }
@@ -1093,16 +1273,18 @@ function Write-PlanSummary {
     $run = @($Plan | Where-Object Status -eq '將執行').Count
     $skip = @($Plan | Where-Object Status -eq '略過').Count
     $err = @($Plan | Where-Object Status -eq '錯誤').Count
+    $ask = @($Plan | Where-Object Status -eq '需確認').Count
     Write-Host ''
     Write-Host '  共 ' -NoNewline; Write-Host "$($Plan.Count)" -NoNewline -ForegroundColor Cyan; Write-Host ' 筆：' -NoNewline
     Write-Host "將執行 $run" -NoNewline -ForegroundColor Green; Write-Host '　' -NoNewline
+    if ($ask -gt 0) { Write-Host "需確認 $ask" -NoNewline -ForegroundColor Yellow; Write-Host '　' -NoNewline }
     Write-Host "略過 $skip" -NoNewline -ForegroundColor DarkGray; Write-Host '　' -NoNewline
     if ($err -gt 0) { Write-Host "錯誤 $err" -ForegroundColor Red } else { Write-Host "錯誤 0" }
 }
 
 function Get-ActionSummaryText {
     param([object[]]$Items)
-    $parts = foreach ($a in @('新增群組', '新增使用者', '加入成員', '移除成員', '刪除使用者', '刪除群組')) {
+    $parts = foreach ($a in @('新增群組', '新增使用者', '加入成員', '移除成員', '搬移物件', '刪除使用者', '刪除群組')) {
         $n = @($Items | Where-Object Action -eq $a).Count
         if ($n -gt 0) { "$a $n 筆" }
     }
@@ -1140,6 +1322,7 @@ function Invoke-PlanReview {
             Write-PlanSummary -Plan $Plan
             $err = @($Plan | Where-Object Status -eq '錯誤').Count
             if ($err -gt 0) { Write-Status "有 $err 筆錯誤，這些不會執行。可以修正後重新匯入，或只執行其他項目。" -Level Warn }
+            Confirm-PendingMove -Plan $Plan
             $first = $false
         }
         $run = @($Plan | Where-Object Status -eq '將執行')
@@ -1165,7 +1348,7 @@ function Invoke-PlanReview {
                     if ($fail -eq 0) { Write-Status "全部完成：成功 $ok 筆。" -Level Ok }
                     else { Write-Status "成功 $ok 筆，失敗 $fail 筆（失敗原因請看上表「訊息」欄）。" -Level Warn }
                     foreach ($f in @($res.ReportFiles)) { Write-Status "執行結果報表：$f" -Level Hint }
-                    if ($res.UndoPath) { Write-Status "還原清單：$($res.UndoPath)（需要復原時，用管理選單 [7] 載入）" -Level Hint }
+                    if ($res.UndoPath) { Write-Status "還原清單：$($res.UndoPath)（需要復原時，用管理選單 [8] 載入）" -Level Hint }
                     return $res
                 }
                 Write-Status '已取消，沒有修改 AD。' -Level Ok
@@ -1198,7 +1381,7 @@ function Read-Field {
 
 function Read-OU {
     param([string]$Kind = '群組')
-    $sample = if ($Kind -eq '使用者') { '台北/財務部/帳號' } else { '台北/財務部/群組' }
+    $sample = if ($Kind -eq '群組') { '台北/財務部/群組' } else { '台北/財務部/帳號' }
     $def = $script:Mgmt["LastOU_$Kind"]
     $v = Read-Field -Label "OU（例如 $sample，或完整的 DN）" -Default $def -Required
     if ($v) { $script:Mgmt["LastOU_$Kind"] = $v }
@@ -1281,6 +1464,18 @@ function Invoke-RemoveMemberForm {
     [void](Invoke-PlanReview -Plan $plan -Title "從 $($g.Name) 移除成員")
 }
 
+function Invoke-MoveForm {
+    Write-Section '搬移物件到其他 OU'
+    $text = Read-Field -Label '要搬移的物件（帳號、電腦名稱、名稱或 DN，多個用 ; 分隔）' -Required
+    $names = Split-NameList $text
+    if ($names.Count -eq 0) { return }
+    $tgt = Read-OU -Kind '搬移'
+    if (-not $tgt) { return }
+    $rows = @(foreach ($n in $names) { [pscustomobject]@{ Source = '手動輸入'; Object = $n; SourceOU = ''; TargetOU = $tgt } })
+    $plan = New-ChangePlan -MoveRows $rows
+    [void](Invoke-PlanReview -Plan $plan -Title '搬移物件')
+}
+
 function Read-FilePath {
     param([string]$Prompt, [string]$Default = '')
     $hint = if ($Default) { "（直接按 Enter = $Default）" } else { '（直接按 Enter 返回）' }
@@ -1293,21 +1488,21 @@ function Read-FilePath {
 
 function Invoke-ImportMenu {
     Write-Section '從 Excel / CSV 批次匯入'
-    Write-Status 'Excel 可包含「群組」「使用者」「群組成員」「移除成員」工作表（可用 [6] 產生範本）；CSV 一次一種資料。' -Level Hint
+    Write-Status 'Excel 可包含「群組」「使用者」「群組成員」「移除成員」「搬移」工作表（可用 [7] 產生範本）；CSV 一次一種資料。' -Level Hint
     $path = Read-FilePath -Prompt '請輸入檔案路徑（.xlsx 或 .csv，可直接把檔案拖進視窗）'
     if (-not $path) { return }
     try { $book = Import-Spreadsheet -Path $path }
     catch { Write-Status "讀取失敗：$($_.Exception.Message)" -Level Error; return }
 
-    $data = @{ Group = @(); User = @(); AddMember = @(); RemoveMember = @() }
-    $fieldKind = @{ Group = 'Group'; User = 'User'; AddMember = 'Membership'; RemoveMember = 'Membership' }
-    $kindText = @{ Group = '新增群組'; User = '新增使用者'; AddMember = '加入成員'; RemoveMember = '移除成員' }
+    $data = @{ Group = @(); User = @(); AddMember = @(); RemoveMember = @(); Move = @() }
+    $fieldKind = @{ Group = 'Group'; User = 'User'; AddMember = 'Membership'; RemoveMember = 'Membership'; Move = 'Move' }
+    $kindText = @{ Group = '新增群組'; User = '新增使用者'; AddMember = '加入成員'; RemoveMember = '移除成員'; Move = '搬移物件' }
     foreach ($sheet in $book.Keys) {
         $rows = @($book[$sheet])
         $kind = Get-SheetKind $sheet
         if ($sheet -eq 'CSV') {
-            $c = Read-Choice 'CSV 的內容是：[1] 群組  [2] 使用者  [3] 加入成員  [4] 移除成員'
-            $kind = switch ($c) { '1' { 'Group' } '2' { 'User' } '3' { 'AddMember' } '4' { 'RemoveMember' } default { $null } }
+            $c = Read-Choice 'CSV 的內容是：[1] 群組  [2] 使用者  [3] 加入成員  [4] 移除成員  [5] 搬移物件'
+            $kind = switch ($c) { '1' { 'Group' } '2' { 'User' } '3' { 'AddMember' } '4' { 'RemoveMember' } '5' { 'Move' } default { $null } }
             if (-not $kind) { Write-Status '已取消。' -Level Hint; return }
         }
         if (-not $kind) {
@@ -1320,7 +1515,7 @@ function Invoke-ImportMenu {
         Write-Status "工作表「$sheet」：$($rows.Count) 列（$($kindText[$kind])）" -Level Info
         if ($conv.Unknown.Count -gt 0) { Write-Status "工作表「$sheet」有無法辨識的欄位，會被忽略：$($conv.Unknown -join '、')" -Level Warn }
     }
-    $total = $data.Group.Count + $data.User.Count + $data.AddMember.Count + $data.RemoveMember.Count
+    $total = $data.Group.Count + $data.User.Count + $data.AddMember.Count + $data.RemoveMember.Count + $data.Move.Count
     if ($total -eq 0) { Write-Status '檔案中沒有可以匯入的資料。' -Level Warn; return }
 
     $defaultOU = ''
@@ -1335,7 +1530,7 @@ function Invoke-ImportMenu {
     }
     Write-Status '檢查資料中（只會查詢 AD，不會修改）...' -Level Info
     try {
-        $plan = New-ChangePlan -GroupRows $data.Group -UserRows $data.User -AddMemberRows $data.AddMember -RemoveMemberRows $data.RemoveMember -Password $pw -DefaultOU $defaultOU
+        $plan = New-ChangePlan -GroupRows $data.Group -UserRows $data.User -AddMemberRows $data.AddMember -RemoveMemberRows $data.RemoveMember -MoveRows $data.Move -Password $pw -DefaultOU $defaultOU
     }
     catch { Write-Status "建立預覽失敗：$($_.Exception.Message)" -Level Error; return }
     [void](Invoke-PlanReview -Plan $plan -Password $pw -Title "批次匯入：$(Split-Path $path -Leaf)")
@@ -1376,9 +1571,10 @@ function Show-ManagementMenu {
         [pscustomobject]@{ Key = '2'; Label = '新增使用者'; Hint = '單筆輸入' }
         [pscustomobject]@{ Key = '3'; Label = '加入成員到群組'; Hint = '使用者、群組或電腦' }
         [pscustomobject]@{ Key = '4'; Label = '從群組移除成員'; Hint = '從目前成員中挑選' }
-        [pscustomobject]@{ Key = '5'; Label = '從 Excel 批次匯入'; Hint = '群組、使用者、加入 / 移除成員（.xlsx / .csv）' }
-        [pscustomobject]@{ Key = '6'; Label = '產生 Excel 範本'; Hint = '含欄位說明與範例' }
-        [pscustomobject]@{ Key = '7'; Label = '用還原清單復原'; Hint = '復原先前執行的變更' }
+        [pscustomobject]@{ Key = '5'; Label = '搬移物件到其他 OU'; Hint = '使用者、群組、電腦；自動查出目前位置' }
+        [pscustomobject]@{ Key = '6'; Label = '從 Excel 批次匯入'; Hint = '群組、使用者、加入 / 移除成員、搬移（.xlsx / .csv）' }
+        [pscustomobject]@{ Key = '7'; Label = '產生 Excel 範本'; Hint = '含欄位說明與範例' }
+        [pscustomobject]@{ Key = '8'; Label = '用還原清單復原'; Hint = '復原先前執行的變更' }
         [pscustomobject]@{ Key = 'Q'; Label = '返回上一層'; Hint = '' }
     )
     foreach ($it in $items) {
@@ -1398,7 +1594,7 @@ function Start-ADManagement {
     param()
     if (-not (Test-ADModuleAvailable)) { return }
     Write-Host ''
-    Write-Status '注意：管理功能會修改 AD，需要有建立物件 / 修改群組成員的權限。' -Level Warn
+    Write-Status '注意：管理功能會修改 AD，需要有建立物件 / 修改群組成員 / 搬移物件的權限。' -Level Warn
     while ($true) {
         Show-ManagementMenu
         $c = (Read-Choice '請選擇').ToUpperInvariant()
@@ -1408,9 +1604,10 @@ function Start-ADManagement {
                 '2' { Invoke-NewUserForm }
                 '3' { Invoke-AddMemberForm }
                 '4' { Invoke-RemoveMemberForm }
-                '5' { Invoke-ImportMenu }
-                '6' { Invoke-TemplateMenu }
-                '7' { Invoke-UndoMenu }
+                '5' { Invoke-MoveForm }
+                '6' { Invoke-ImportMenu }
+                '7' { Invoke-TemplateMenu }
+                '8' { Invoke-UndoMenu }
                 'Q' { return }
                 default { Write-Status '請輸入選單上的代號。' -Level Warn }
             }
@@ -1438,7 +1635,7 @@ function Start-ADTool {
         Write-Section '請選擇功能'
         $top = @(
             [pscustomobject]@{ Key = '1'; Label = '查詢（唯讀）'; Hint = '路徑權限、群組成員、使用者 / 電腦資訊、比較群組...' }
-            [pscustomobject]@{ Key = '2'; Label = '管理（會修改 AD）'; Hint = '新增群組 / 使用者、加入 / 移除成員、Excel 批次匯入' }
+            [pscustomobject]@{ Key = '2'; Label = '管理（會修改 AD）'; Hint = '新增群組 / 使用者、加入 / 移除成員、搬移 OU、Excel 匯入' }
             [pscustomobject]@{ Key = 'Q'; Label = '離開'; Hint = '' }
         )
         foreach ($it in $top) {

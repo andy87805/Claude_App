@@ -2,11 +2,11 @@
 # 這些只是空殼函式，實際行為由各測試中的 Mock 決定。
 
 $adStubs = 'Get-ADObject', 'Get-ADUser', 'Get-ADGroup', 'Get-ADGroupMember', 'Get-ADComputer', 'Get-ADDomain', 'Get-ADDefaultDomainPasswordPolicy',
-'New-ADGroup', 'New-ADUser', 'Add-ADGroupMember', 'Remove-ADGroupMember', 'Remove-ADUser', 'Remove-ADGroup'
+'New-ADGroup', 'New-ADUser', 'Add-ADGroupMember', 'Remove-ADGroupMember', 'Remove-ADUser', 'Remove-ADGroup', 'Move-ADObject'
 $adParams = 'Identity', 'Filter', 'Properties', 'Server', 'ResultSetSize', 'SearchBase', 'SearchScope', 'Members', 'Name', 'SamAccountName', 'Path',
 'GroupScope', 'GroupCategory', 'DisplayName', 'Description', 'OtherAttributes', 'PassThru', 'AccountPassword', 'ChangePasswordAtLogon', 'Enabled',
 'UserPrincipalName', 'GivenName', 'Surname', 'EmailAddress', 'Department', 'Title', 'Company', 'Office', 'OfficePhone', 'MobilePhone', 'EmployeeID',
-'Manager', 'AccountExpirationDate'
+'Manager', 'AccountExpirationDate', 'TargetPath'
 foreach ($name in $adStubs) {
     if (-not (Get-Command -Name $name -ErrorAction SilentlyContinue)) {
         $plist = ($adParams | ForEach-Object { "`$$_" }) -join ', '
@@ -71,7 +71,7 @@ function New-FakeADObject {
         # PowerShell 屬性名稱不分大小寫，$o.SamAccountName 與 $o.sAMAccountName 指向同一個屬性
         objectClass = @('top', $Class); sAMAccountName = $Sam; name = $Name
         distinguishedName = $Dn; objectSid = $Sid; SID = $Sid
-        displayName = $DisplayName; description = ''; objectGUID = [guid]::NewGuid().ToString()
+        displayName = $DisplayName; description = ''; objectGUID = [guid]::NewGuid().ToString(); ProtectedFromAccidentalDeletion = $false
     }
 }
 
@@ -212,7 +212,8 @@ $global:FinanceRules = @(
 $global:FakeOUs = @('OU=Groups,DC=corp,DC=local', 'OU=Users,DC=corp,DC=local', 'OU=Computers,DC=corp,DC=local', 'CN=Users,DC=corp,DC=local',
     'CN=Builtin,DC=corp,DC=local',                                  # 內建容器（不是 OU）
     'OU=台北,DC=corp,DC=local', 'OU=財務部,OU=台北,DC=corp,DC=local', 'OU=帳號,OU=財務部,OU=台北,DC=corp,DC=local',
-    'OU=R&D\, Lab,OU=台北,DC=corp,DC=local')                        # 名稱中有逗號
+    'OU=R&D\, Lab,OU=台北,DC=corp,DC=local',                        # 名稱中有逗號
+    'OU=業務部,OU=台北,DC=corp,DC=local')
 
 function Get-FakeADObjectForMgmt {
     # 模擬 Get-ADObject：-Identity（DN / GUID / OU）、-Filter "sAMAccountName -eq"、-Filter "Name -eq" + SearchBase
@@ -223,7 +224,8 @@ function Get-FakeADObjectForMgmt {
         foreach ($o in $global:FakeAD.Values) {
             if ($o.objectGUID -eq $id -or $o.distinguishedName -eq $id) {
                 return [pscustomobject]@{ sAMAccountName = $o.sAMAccountName; objectClass = $o.objectClass; objectGUID = $o.objectGUID; name = $o.name
-                    distinguishedName = $o.distinguishedName; member = @($global:GroupMembers[$o.distinguishedName]) }
+                    distinguishedName = $o.distinguishedName; member = @($global:GroupMembers[$o.distinguishedName])
+                    ProtectedFromAccidentalDeletion = $o.ProtectedFromAccidentalDeletion }
             }
         }
         throw "Cannot find an object with identity: '$id'"
@@ -235,7 +237,11 @@ function Get-FakeADObjectForMgmt {
     }
     if ($Filter -match "Name -eq '((?:[^']|'')*)'") {
         $n = $Matches[1] -replace "''", "'"
-        foreach ($o in $global:FakeAD.Values) { if ($o.name -eq $n -and $o.distinguishedName -eq "CN=$n,$SearchBase") { return $o } }
+        if ($SearchBase) {
+            foreach ($o in $global:FakeAD.Values) { if ($o.name -eq $n -and $o.distinguishedName -eq "CN=$n,$SearchBase") { return $o } }
+            return
+        }
+        foreach ($o in @($global:FakeAD.Values | Sort-Object distinguishedName)) { if ($o.name -eq $n) { $o } }
         return
     }
 }
