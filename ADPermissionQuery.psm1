@@ -1099,13 +1099,252 @@ function Test-GridViewAvailable {
     return [bool](Get-Command -Name Out-GridView -ErrorAction SilentlyContinue)
 }
 
-function Show-Table {
-    <# 在主控台顯示表格 #>
-    param([object[]]$Rows, [string]$Kind, [string]$Title)
+# ---------------------------------------------------------------------------
+# 主控台排版
+#   - 中日韓文字與全形符號在主控台佔 2 格，自行計算寬度讓表格對齊（Format-Table 在 5.1 會歪）
+#   - 只用 ASCII 的線條（- =）：─、… 這類「寬度不明確」的字元在繁中主控台會佔 2 格而跑版
+# ---------------------------------------------------------------------------
+$script:WideCharPattern = New-Object System.Text.RegularExpressions.Regex('[ᄀ-ᅟ⺀-〾ぁ-㏿㐀-䶿一-鿿ꀀ-꓏가-힣豈-﫿︰-﹏＀-｠￠-￦]')
+
+function Get-ConsoleWidth {
+    $w = 0
+    try { $w = [int]$Host.UI.RawUI.WindowSize.Width } catch { $w = 0 }
+    if ($w -lt 60) { $w = 120 }
+    return $w
+}
+
+function Get-ConsoleHeight {
+    $h = 0
+    try { $h = [int]$Host.UI.RawUI.WindowSize.Height } catch { $h = 0 }
+    if ($h -lt 15) { $h = 40 }
+    return $h
+}
+
+function Get-DisplayWidth {
+    <# 主控台顯示寬度：中日韓文字與全形符號佔 2 格 #>
+    param([string]$Text)
+    if (-not $Text) { return 0 }
+    return $Text.Length + $script:WideCharPattern.Matches($Text).Count
+}
+
+function Format-Cell {
+    <# 把文字補空白或截斷到指定顯示寬度；-KeepTail 截斷時保留後段（適合路徑） #>
+    param([string]$Text, [int]$Width, [switch]$KeepTail)
+    $t = ("$Text" -replace '[\r\n\t]+', ' ')
+    $w = Get-DisplayWidth $t
+    if ($w -le $Width) { return $t + (' ' * ($Width - $w)) }
+    if ($Width -le 2) { return ('.' * $Width) }
+    $target = $Width - 2
+    $sb = New-Object System.Text.StringBuilder
+    $used = 0
+    if ($KeepTail) {
+        for ($i = $t.Length - 1; $i -ge 0; $i--) {
+            $cw = Get-DisplayWidth ([string]$t[$i])
+            if ($used + $cw -gt $target) { break }
+            [void]$sb.Insert(0, $t[$i]); $used += $cw
+        }
+        return '..' + $sb.ToString() + (' ' * ($target - $used))
+    }
+    foreach ($ch in $t.ToCharArray()) {
+        $cw = Get-DisplayWidth ([string]$ch)
+        if ($used + $cw -gt $target) { break }
+        [void]$sb.Append($ch); $used += $cw
+    }
+    return $sb.ToString() + '..' + (' ' * ($target - $used))
+}
+
+function Write-Status {
+    <# 統一格式的訊息：Error [X] 紅、Warn [!] 黃、Ok [OK] 綠、Info 灰、Hint 暗灰 #>
+    param([string]$Message, [ValidateSet('Info', 'Note', 'Ok', 'Warn', 'Error', 'Hint')][string]$Level = 'Info')
+    switch ($Level) {
+        'Note'  { Write-Host "  $Message" -ForegroundColor Cyan }
+        'Error' { Write-Host "  [X] $Message" -ForegroundColor Red }
+        'Warn'  { Write-Host "  [!] $Message" -ForegroundColor Yellow }
+        'Ok'    { Write-Host "  [OK] $Message" -ForegroundColor Green }
+        'Hint'  { Write-Host "  $Message" -ForegroundColor DarkGray }
+        default { Write-Host "  $Message" -ForegroundColor Gray }
+    }
+}
+
+function Write-Section {
+    <# 區塊標題：標題文字＋等長的底線 #>
+    param([string]$Title)
+    $line = [Math]::Min([Math]::Max((Get-DisplayWidth $Title) + 2, 20), (Get-ConsoleWidth) - 2)
     Write-Host ''
-    if ($Title) { Write-Host "=== $Title ===" -ForegroundColor Cyan }
-    if (-not $Rows -or $Rows.Count -eq 0) { Write-Host '（沒有資料）' -ForegroundColor DarkGray; return }
-    Format-ForDisplay -Kind $Kind -InputObject $Rows | Format-Table -AutoSize -Wrap | Out-String -Width 4096 | Write-Host
+    Write-Host " $Title" -ForegroundColor Cyan
+    Write-Host (' ' + ('-' * $line)) -ForegroundColor DarkGray
+}
+
+function Show-Options {
+    <# 選單選項自動排成多欄；項目格式 'K|說明'，代號以黃色顯示 #>
+    param([string[]]$Items)
+    $parsed = @(foreach ($it in $Items) { $k, $l = $it -split '\|', 2; [pscustomobject]@{ Key = $k; Label = $l } })
+    $cellW = 0
+    foreach ($p in $parsed) { $cellW = [Math]::Max($cellW, (Get-DisplayWidth "[$($p.Key)] $($p.Label)") + 3) }
+    $perRow = [Math]::Max(1, [Math]::Min(4, [Math]::Floor(((Get-ConsoleWidth) - 4) / [Math]::Max(1, $cellW))))
+    Write-Host ''
+    for ($i = 0; $i -lt $parsed.Count; $i += $perRow) {
+        Write-Host '  ' -NoNewline
+        for ($j = $i; $j -lt [Math]::Min($i + $perRow, $parsed.Count); $j++) {
+            $p = $parsed[$j]
+            Write-Host "[$($p.Key)]" -NoNewline -ForegroundColor Yellow
+            $label = " $($p.Label)"
+            if ($j -lt [Math]::Min($i + $perRow, $parsed.Count) - 1) { $label = Format-Cell $label ($cellW - (Get-DisplayWidth "[$($p.Key)]")) }
+            Write-Host $label -NoNewline
+        }
+        Write-Host ''
+    }
+}
+
+function Get-CellColor {
+    <# 依欄位與內容決定顏色：拒絕紅、異常黃 #>
+    param([string]$Column, [string]$Value)
+    if (-not $Value) { return $null }
+    switch -Regex ($Column) {
+        '^#$'                { return 'DarkGray' }
+        '允許/拒絕'          { if ($Value -eq '拒絕') { return 'Red' }; return $null }
+        '^(帳號狀態|狀態)$'  { if ($Value -ne '正常' -and $Value -notlike '（*') { return 'Yellow' }; return $null }
+        '^類型$'             { if ($Value -eq '孤立 SID') { return 'Yellow' }; return $null }
+        '^中斷繼承$'         { if ($Value -eq '是') { return 'Yellow' }; return $null }
+        '^比較結果$'         { if ($Value -eq '兩者都有') { return 'DarkGray' }; return 'Yellow' }
+        '^(備註|描述)$'      { return 'DarkGray' }
+    }
+    return $null
+}
+
+# 主控台表格的欄位設定：Hide = 主控台不顯示（視窗與匯出仍完整）、ShrinkFirst = 寬度不夠時優先縮減
+$script:ConsoleView = @{
+    Permission = @{ Hide = @(); ShrinkFirst = @('備註', '顯示名稱', '套用到') }
+    Member     = @{ Hide = @('電話', '密碼設定日'); ShrinkFirst = @('Email', '取得途徑', '職稱') }
+    Access     = @{ Hide = @(); ShrinkFirst = @('確定性', '對應項目', '套用到') }
+    Scan       = @{ Hide = @(); ShrinkFirst = @('備註', '套用到', '帳戶') }
+    Group      = @{ Hide = @(); ShrinkFirst = @('描述', '取得方式') }
+    User       = @{ Hide = @('電話'); ShrinkFirst = @('Email', '職稱') }
+    Computer   = @{ Hide = @(); ShrinkFirst = @('描述', '所在 OU', '作業系統') }
+    Info       = @{ Hide = @(); ShrinkFirst = @() }
+    Compare    = @{ Hide = @(); ShrinkFirst = @('描述', 'B 的取得方式', 'A 的取得方式') }
+    Usage      = @{ Hide = @(); ShrinkFirst = @('備註', '套用到') }
+}
+
+function Show-Table {
+    <#
+        在主控台顯示表格：中文對齊、依視窗寬度自動縮欄、太長的內容截斷（完整內容請用視窗或匯出）、
+        整欄空白的欄位不顯示、超過一頁時分頁。
+    #>
+    param([object[]]$Rows, [string]$Kind, [string]$Title)
+    if ($Title) { Write-Section $Title }
+    if (-not $Rows -or $Rows.Count -eq 0) { Write-Status '（沒有資料）' -Level Hint; return }
+
+    $data = @(Format-ForDisplay -Kind $Kind -InputObject $Rows)
+    $view = $script:ConsoleView[$Kind]
+    $cols = New-Object System.Collections.Generic.List[string]
+    foreach ($name in @($data[0].PSObject.Properties | ForEach-Object Name)) {
+        if ($view -and $view.Hide -contains $name) { continue }
+        $hasValue = $false
+        foreach ($d in $data) { if ("$($d.$name)" -ne '') { $hasValue = $true; break } }
+        if ($hasValue) { $cols.Add($name) }
+    }
+    # 日期在主控台只顯示到日（視窗與匯出保留時間）
+    foreach ($d in $data) {
+        foreach ($c in $cols) {
+            $v = "$($d.$c)"
+            if ($v -match '^(\d{4}-\d{2}-\d{2}) \d{2}:\d{2}$') { $d.$c = $Matches[1] }
+        }
+    }
+    $cols = @($cols)
+    $tailCols = @('資料夾')
+    $natural = @{}
+    foreach ($c in $cols) {
+        $w = Get-DisplayWidth $c
+        foreach ($d in $data) { $w = [Math]::Max($w, (Get-DisplayWidth "$($d.$c)")) }
+        $natural[$c] = [Math]::Min($w, 60)
+    }
+    $indent = 2; $gap = 2
+    $consoleWidth = Get-ConsoleWidth
+    $shrinkFirst = @(); if ($view) { $shrinkFirst = @($view.ShrinkFirst) }
+    # 縮到最小仍放不下時，依序暫時隱藏的欄位：先次要欄位，再從右邊開始（保留 # 與第一欄）
+    $dropOrder = @($shrinkFirst | Where-Object { $cols -contains $_ })
+    for ($k = $cols.Count - 1; $k -ge 2; $k--) { if ($dropOrder -notcontains $cols[$k]) { $dropOrder += $cols[$k] } }
+    $hidden = @()
+    while ($true) {
+        $widths = @{}; foreach ($c in $cols) { $widths[$c] = $natural[$c] }
+        $avail = $consoleWidth - 1 - $indent - $gap * ($cols.Count - 1)
+        $total = 0; foreach ($c in $cols) { $total += $widths[$c] }
+        # 1. 先縮次要欄位（最小 10）
+        foreach ($c in $shrinkFirst) {
+            if ($cols -notcontains $c -or $total -le $avail) { continue }
+            $min = [Math]::Max(10, (Get-DisplayWidth $c))
+            $new = [Math]::Max($min, $widths[$c] - ($total - $avail))
+            if ($new -lt $widths[$c]) { $total -= ($widths[$c] - $new); $widths[$c] = $new }
+        }
+        # 2. 再從最寬的欄位開始縮（最小 8）
+        while ($total -gt $avail) {
+            $widest = $null
+            foreach ($c in $cols) { if ($c -ne '#' -and (-not $widest -or $widths[$c] -gt $widths[$widest])) { $widest = $c } }
+            if (-not $widest -or $widths[$widest] -le 8) { break }
+            $widths[$widest]--; $total--
+        }
+        if ($total -le $avail) { break }
+        # 3. 還是放不下：隱藏一個欄位後重算
+        $drop = $null
+        foreach ($c in $dropOrder) { if ($cols -contains $c) { $drop = $c; break } }
+        if (-not $drop -or $cols.Count -le 3) { break }
+        $cols = @($cols | Where-Object { $_ -ne $drop })
+        $hidden += $drop
+    }
+    $pad = ' ' * $indent; $sep = ' ' * $gap
+    Write-Host ($pad + ((@($cols) | ForEach-Object { Format-Cell $_ $widths[$_] }) -join $sep).TrimEnd()) -ForegroundColor Cyan
+    Write-Host ($pad + ((@($cols) | ForEach-Object { '-' * $widths[$_] }) -join $sep)) -ForegroundColor DarkGray
+
+    if ($hidden.Count -gt 0) {
+        Write-Status "視窗太窄，未顯示：$($hidden -join '、')（可放大視窗，或用 [S] 開視窗、[E] 匯出查看完整內容）" -Level Hint
+    }
+    $pageSize = [Math]::Max(15, (Get-ConsoleHeight) - 8)
+    for ($i = 0; $i -lt $data.Count; $i++) {
+        if ($i -gt 0 -and ($i % $pageSize) -eq 0) {
+            $more = Read-Host "  -- 已顯示 $i / $($data.Count) 筆，按 Enter 繼續，輸入 Q 停止 --"
+            if ("$more".Trim() -match '^(q|quit)$') {
+                Write-Status "其餘 $($data.Count - $i) 筆未顯示，可用 [S] 開視窗或 [E] 匯出查看完整清單。" -Level Hint
+                break
+            }
+        }
+        $d = $data[$i]
+        $cells = foreach ($c in $cols) {
+            $raw = "$($d.$c)"
+            [pscustomobject]@{ Text = (Format-Cell $raw $widths[$c] -KeepTail:($tailCols -contains $c)); Color = (Get-CellColor -Column $c -Value $raw) }
+        }
+        if (-not @($cells | Where-Object { $_.Color })) {
+            Write-Host ($pad + ((@($cells) | ForEach-Object Text) -join $sep).TrimEnd())
+            continue
+        }
+        Write-Host $pad -NoNewline
+        $n = 0
+        foreach ($cell in $cells) {
+            $n++
+            $text = if ($n -eq @($cells).Count) { $cell.Text.TrimEnd() } else { $cell.Text + $sep }
+            if ($cell.Color) {
+                Write-Host $cell.Text.TrimEnd() -NoNewline -ForegroundColor $cell.Color
+                $rest = $text.Substring($cell.Text.TrimEnd().Length)
+                if ($rest) { Write-Host $rest -NoNewline }
+            }
+            else { Write-Host $text -NoNewline }
+        }
+        Write-Host ''
+    }
+}
+
+function Show-InfoBlock {
+    <# 「項目 : 內容」對齊顯示 #>
+    param([object[]]$Info, [string]$Title)
+    Write-Section $Title
+    $Info = @($Info | Where-Object { "$($_.Value)" -ne '' })   # 空白的項目不顯示（匯出時仍保留）
+    $w = 0
+    foreach ($i in $Info) { $w = [Math]::Max($w, (Get-DisplayWidth ([string]$i.Field))) }
+    foreach ($i in $Info) {
+        Write-Host ('  ' + (Format-Cell ([string]$i.Field) $w) + ' : ') -NoNewline -ForegroundColor Gray
+        if ($i.Field -match '狀態' -and $i.Value -and $i.Value -ne '正常') { Write-Host $i.Value -ForegroundColor Yellow }
+        else { Write-Host $i.Value }
+    }
 }
 
 function Select-OneItem {
@@ -1123,18 +1362,18 @@ function Select-OneItem {
             return $Items[[int]$picked.'#' - 1]
         }
         catch {
-            Write-Host "無法開啟視窗（$($_.Exception.Message)），改用文字選單。" -ForegroundColor Yellow
+            Write-Status "無法開啟視窗（$($_.Exception.Message)），改用文字選單。" -Level Warn
             $script:Config.NoGui = $true
         }
     }
 
     Show-Table -Rows $Items -Kind $Kind -Title $Title
     while ($true) {
-        $ans = Read-Host "請輸入編號 (1-$($Items.Count))，直接按 Enter 取消"
+        $ans = Read-Host "  請輸入編號 (1-$($Items.Count))，直接按 Enter 取消"
         if (-not $ans) { return $null }
         $n = 0
         if ([int]::TryParse($ans.Trim(), [ref]$n) -and $n -ge 1 -and $n -le $Items.Count) { return $Items[$n - 1] }
-        Write-Host '編號不正確，請重新輸入。' -ForegroundColor Yellow
+        Write-Status '編號不正確，請重新輸入。' -Level Warn
     }
 }
 
@@ -1150,23 +1389,23 @@ function Show-Result {
 
 function Read-ExportChoice {
     param([object[]]$Rows, [string]$Kind, [string]$Title, [string]$Subtitle)
-    $fmt = Read-Host '匯出格式：[1] CSV  [2] HTML  [3] 兩種都要（預設 3）'
+    $fmt = Read-Host '  匯出格式：[1] CSV  [2] HTML  [3] 兩種都要（預設 3）'
     $format = switch ($fmt) { '1' { 'CSV' } '2' { 'HTML' } default { 'Both' } }
     $def = Get-DefaultExportFolder
-    $folder = Read-Host "存放資料夾（直接 Enter 使用 $def）"
+    $folder = Read-Host "  存放資料夾（直接 Enter 使用 $def）"
     if (-not $folder) { $folder = $def }
     try {
         $files = Export-QueryReport -Kind $Kind -InputObject $Rows -Title $Title -Subtitle $Subtitle -Format $format -Folder $folder
-        foreach ($f in $files) { Write-Host "已匯出：$f" -ForegroundColor Green }
+        foreach ($f in $files) { Write-Status "已匯出：$f" -Level Ok }
     }
     catch {
-        Write-Host "匯出失敗：$($_.Exception.Message)" -ForegroundColor Red
+        Write-Status "匯出失敗：$($_.Exception.Message)" -Level Error
     }
 }
 
 function Read-Choice {
     param([string]$Prompt)
-    return "$(Read-Host $Prompt)".Trim()
+    return "$(Read-Host "  $Prompt")".Trim()
 }
 
 function Read-YesNo {
@@ -1185,7 +1424,7 @@ function Read-PathInput {
         $p = (Read-Choice $Prompt).Trim('"')
         if (-not $p -or $p -match '^(q|quit|exit|b)$') { return $null }
         if (Test-Path -LiteralPath $p) { return $p }
-        Write-Host "找不到路徑或沒有讀取權限：$p" -ForegroundColor Red
+        Write-Status "找不到路徑或沒有讀取權限：$p" -Level Error
     }
 }
 
@@ -1203,13 +1442,13 @@ function Select-GroupInteractive {
     $name = Read-Choice $Prompt
     if (-not $name) { return $null }
     try { $found = @(Find-ADGroupByName -Name $name) }
-    catch { Write-Host "搜尋群組失敗：$($_.Exception.Message)" -ForegroundColor Red; return $null }
-    if ($found.Count -eq 0) { Write-Host "找不到名稱包含「$name」的群組。" -ForegroundColor Yellow; return $null }
+    catch { Write-Status "搜尋群組失敗：$($_.Exception.Message)" -Level Error; return $null }
+    if ($found.Count -eq 0) { Write-Status "找不到名稱包含「$name」的群組。" -Level Warn; return $null }
     $key = Get-SamFromInput $name
     $exact = @($found | Where-Object { $_.SamAccountName -eq $key -or $_.Name -eq $key })
     if ($exact.Count -eq 1) { return $exact[0] }
     if ($found.Count -eq 1) { return $found[0] }
-    if ($found.Count -ge $script:MaxSearchResults) { Write-Host "符合的群組太多，只列出前 $($script:MaxSearchResults) 筆，可輸入更完整的名稱。" -ForegroundColor Yellow }
+    if ($found.Count -ge $script:MaxSearchResults) { Write-Status "符合的群組太多，只列出前 $($script:MaxSearchResults) 筆，可輸入更完整的名稱。" -Level Warn }
     return (Select-OneItem -Items $found -Kind Group -Title "找到 $($found.Count) 個群組，請選擇")
 }
 
@@ -1220,10 +1459,10 @@ function Select-UserInteractive {
     if (-not $text) { return $null }
     try { return [string](Get-ADUserDetail -Identity (Get-SamFromInput $text)).DistinguishedName } catch { Write-Verbose "不是完整帳號，改用關鍵字搜尋：$text" }
     try { $found = @(Find-ADUserByKeyword -Keyword $text) }
-    catch { Write-Host "搜尋帳號失敗：$($_.Exception.Message)" -ForegroundColor Red; return $null }
-    if ($found.Count -eq 0) { Write-Host "找不到符合「$text」的使用者。" -ForegroundColor Yellow; return $null }
+    catch { Write-Status "搜尋帳號失敗：$($_.Exception.Message)" -Level Error; return $null }
+    if ($found.Count -eq 0) { Write-Status "找不到符合「$text」的使用者。" -Level Warn; return $null }
     if ($found.Count -eq 1) { return $found[0].DistinguishedName }
-    if ($found.Count -ge $script:MaxSearchResults) { Write-Host "符合的帳號太多，只列出前 $($script:MaxSearchResults) 筆，可輸入更完整的關鍵字。" -ForegroundColor Yellow }
+    if ($found.Count -ge $script:MaxSearchResults) { Write-Status "符合的帳號太多，只列出前 $($script:MaxSearchResults) 筆，可輸入更完整的關鍵字。" -Level Warn }
     $u = Select-OneItem -Items $found -Kind User -Title "找到 $($found.Count) 位使用者，請選擇"
     if ($u) { return $u.DistinguishedName }
     return $null
@@ -1235,12 +1474,12 @@ function Select-ComputerInteractive {
     $text = Read-Choice $Prompt
     if (-not $text) { return $null }
     try { $found = @(Find-ADComputerByName -Name $text) }
-    catch { Write-Host "搜尋電腦失敗：$($_.Exception.Message)" -ForegroundColor Red; return $null }
-    if ($found.Count -eq 0) { Write-Host "找不到名稱包含「$text」的電腦。" -ForegroundColor Yellow; return $null }
+    catch { Write-Status "搜尋電腦失敗：$($_.Exception.Message)" -Level Error; return $null }
+    if ($found.Count -eq 0) { Write-Status "找不到名稱包含「$text」的電腦。" -Level Warn; return $null }
     $exact = @($found | Where-Object { $_.Name -eq $text.Trim().TrimEnd('$') })
     if ($exact.Count -eq 1) { return $exact[0].DistinguishedName }
     if ($found.Count -eq 1) { return $found[0].DistinguishedName }
-    if ($found.Count -ge $script:MaxSearchResults) { Write-Host "符合的電腦太多，只列出前 $($script:MaxSearchResults) 筆。" -ForegroundColor Yellow }
+    if ($found.Count -ge $script:MaxSearchResults) { Write-Status "符合的電腦太多，只列出前 $($script:MaxSearchResults) 筆。" -Level Warn }
     $c = Select-OneItem -Items $found -Kind Computer -Title "找到 $($found.Count) 台電腦，請選擇"
     if ($c) { return $c.DistinguishedName }
     return $null
@@ -1262,12 +1501,12 @@ function Invoke-ListMenu {
         Write-Host ''
         $line = "共 $($all.Count) 筆"
         if ($filterText) { $line += "　目前篩選：$filterText → $($current.Count) 筆" }
-        Write-Host $line -ForegroundColor Cyan
+        Write-Status $line -Level Note
         if ($Summary) { & $Summary $all }
         $opts = @()
-        foreach ($x in $Extra) { $opts += "[$($x.Key)] $($x.Label)" }
-        $opts += '[F] 關鍵字篩選', '[C] 清除篩選', '[E] 匯出目前清單', '[S] 重新顯示', '[B] 返回'
-        Write-Host ($opts -join '  ')
+        foreach ($x in $Extra) { $opts += "$($x.Key)|$($x.Label)" }
+        $opts += 'F|關鍵字篩選', 'C|清除篩選', 'E|匯出目前清單', 'S|重新顯示（開視窗）', 'B|返回'
+        Show-Options $opts
         $c = (Read-Choice '請選擇').ToUpperInvariant()
         $handled = $false
         foreach ($x in $Extra) {
@@ -1293,7 +1532,7 @@ function Invoke-ListMenu {
             }
             'S' { Show-Result -Rows $current -Kind $Kind -Title $Title }
             'B' { return }
-            default { Write-Host '請輸入選單上的代號。' -ForegroundColor Yellow }
+            default { Write-Status '請輸入選單上的代號。' -Level Warn }
         }
     }
 }
@@ -1303,12 +1542,12 @@ function Invoke-MemberMenu {
     param([Parameter(Mandatory)][string]$GroupId, [string]$Label)
     if (-not $Label) { $Label = Get-NameFromDN $GroupId }
     $recurse = Read-YesNo -Prompt '是否展開巢狀群組（包含子群組內的成員）？' -Default $true
-    Write-Host "查詢群組「$Label」成員中..." -ForegroundColor Gray
+    Write-Status "查詢群組「$Label」成員中..." -Level Info
     try {
         $all = @(Get-GroupMemberDetail -Identity $GroupId -Recurse:$recurse)
     }
     catch {
-        Write-Host "查詢群組成員失敗：$($_.Exception.Message)" -ForegroundColor Red
+        Write-Status "查詢群組成員失敗：$($_.Exception.Message)" -Level Error
         return
     }
     $title = "群組成員：$Label"
@@ -1317,7 +1556,7 @@ function Invoke-MemberMenu {
         param($rows)
         $users = @($rows | Where-Object { $_.ObjectClass -eq '使用者' })
         $abnormal = @($users | Where-Object { $_.Status -ne '正常' })
-        Write-Host "使用者 $($users.Count) 位，其中狀態異常 $($abnormal.Count) 位" -ForegroundColor Cyan
+        Write-Status "使用者 $($users.Count) 位，其中狀態異常 $($abnormal.Count) 位" -Level Note
     }
     $extra = @(
         @{ Key = 'A'; Label = '只看狀態異常帳號'; Action = { param($cur, $full) @($full | Where-Object { $_.ObjectClass -eq '使用者' -and $_.Status -ne '正常' }) } }
@@ -1331,29 +1570,6 @@ function Invoke-MemberMenu {
         }
     )
     Invoke-ListMenu -Rows $all -Kind Member -Title $title -ExportTitle $title -Extra $extra -Summary $summary
-}
-
-function Get-DisplayWidth {
-    # 主控台顯示寬度：中日韓文字與全形符號佔 2 格
-    param([string]$Text)
-    $w = 0
-    foreach ($ch in $Text.ToCharArray()) { if ([int]$ch -ge 0x2E80) { $w += 2 } else { $w += 1 } }
-    return $w
-}
-
-function Show-InfoBlock {
-    param([object[]]$Info, [string]$Title)
-    Write-Host ''
-    Write-Host "=== $Title ===" -ForegroundColor Cyan
-    $w = 0
-    foreach ($i in $Info) { $w = [Math]::Max($w, (Get-DisplayWidth ([string]$i.Field))) }
-    foreach ($i in $Info) {
-        $pad = $w - (Get-DisplayWidth ([string]$i.Field))
-        if ($pad -lt 0) { $pad = 0 }
-        $color = 'Gray'
-        if ($i.Field -match '狀態' -and $i.Value -and $i.Value -ne '正常') { $color = 'Yellow' }
-        Write-Host ("  {0}{1} : {2}" -f $i.Field, (' ' * $pad), $i.Value) -ForegroundColor $color
-    }
 }
 
 function Invoke-PrincipalGroupMenu {
@@ -1376,7 +1592,7 @@ function Invoke-PrincipalGroupMenu {
 function Invoke-UserInfoMenu {
     param([Parameter(Mandatory)][string]$UserId)
     try { $r = Get-ADUserInfo -Identity $UserId }
-    catch { Write-Host "查詢使用者失敗：$($_.Exception.Message)" -ForegroundColor Red; return }
+    catch { Write-Status "查詢使用者失敗：$($_.Exception.Message)" -Level Error; return }
     $name = "$($r.User.SamAccountName)（$($r.User.Name)）"
     Show-InfoBlock -Info $r.Info -Title "使用者資訊：$name"
     $ex = Read-YesNo -Prompt '要匯出使用者資訊嗎？' -Default $false
@@ -1387,7 +1603,7 @@ function Invoke-UserInfoMenu {
 function Invoke-ComputerInfoMenu {
     param([Parameter(Mandatory)][string]$ComputerId)
     try { $r = Get-ADComputerInfo -Identity $ComputerId }
-    catch { Write-Host "查詢電腦失敗：$($_.Exception.Message)" -ForegroundColor Red; return }
+    catch { Write-Status "查詢電腦失敗：$($_.Exception.Message)" -Level Error; return }
     $name = $r.Computer.Name
     Show-InfoBlock -Info $r.Info -Title "電腦資訊：$name"
     $ex = Read-YesNo -Prompt '要匯出電腦資訊嗎？' -Default $false
@@ -1399,26 +1615,27 @@ function Invoke-GroupMenu {
     $g = Select-GroupInteractive
     if (-not $g) { return }
     Write-Host ''
-    Write-Host "群組：$($g.Name)　類型：$($g.Category)　範圍：$($g.Scope)　描述：$($g.Description)" -ForegroundColor Cyan
+    Write-Status "群組：$($g.Name)　類型：$($g.Category)　範圍：$($g.Scope)　描述：$($g.Description)" -Level Note
     Invoke-MemberMenu -GroupId $g.DistinguishedName -Label $g.Name
 }
 
 function Invoke-CompareMenu {
-    Write-Host '比較兩位使用者所屬的群組（含巢狀），常用於「新人的權限比照某位同事」。' -ForegroundColor Gray
+    Write-Status '比較兩位使用者所屬的群組（含巢狀），常用於「新人的權限比照某位同事」。' -Level Info
     $a = Select-UserInteractive -Prompt '請輸入使用者 A（帳號或姓名），直接按 Enter 返回'
     if (-not $a) { return }
     $b = Select-UserInteractive -Prompt '請輸入使用者 B（帳號或姓名），直接按 Enter 返回'
     if (-not $b) { return }
     try { $r = Compare-ADUserGroup -UserA $a -UserB $b }
-    catch { Write-Host "比較失敗：$($_.Exception.Message)" -ForegroundColor Red; return }
+    catch { Write-Status "比較失敗：$($_.Exception.Message)" -Level Error; return }
     $na = $r.UserA.SamAccountName; $nb = $r.UserB.SamAccountName
     $diff = @($r.Rows | Where-Object { $_.Result -ne '兩者都有' })
     Write-Host ''
-    Write-Host "A = $na（$($r.UserA.Name)，$($r.UserA.Department)）　B = $nb（$($r.UserB.Name)，$($r.UserB.Department)）" -ForegroundColor Cyan
-    Write-Host ("只有 A：{0} 個　只有 B：{1} 個　兩者都有：{2} 個" -f @($r.Rows | Where-Object { $_.Result -eq "只有 $na" }).Count,
-        @($r.Rows | Where-Object { $_.Result -eq "只有 $nb" }).Count, @($r.Rows | Where-Object { $_.Result -eq '兩者都有' }).Count) -ForegroundColor Cyan
+    Write-Status "A = $na（$($r.UserA.Name)，$($r.UserA.Department)）　B = $nb（$($r.UserB.Name)，$($r.UserB.Department)）" -Level Note
+    $summary = "只有 A：{0} 個　只有 B：{1} 個　兩者都有：{2} 個" -f @($r.Rows | Where-Object { $_.Result -eq "只有 $na" }).Count,
+        @($r.Rows | Where-Object { $_.Result -eq "只有 $nb" }).Count, @($r.Rows | Where-Object { $_.Result -eq '兩者都有' }).Count
+    Write-Status $summary -Level Note
     $title = "群組比較：A=$na、B=$nb"
-    if ($diff.Count -eq 0) { Write-Host '兩人的群組完全相同。' -ForegroundColor Green }
+    if ($diff.Count -eq 0) { Write-Status '兩人的群組完全相同。' -Level Ok }
     Show-Result -Rows $diff -Kind Compare -Title "$title（只列差異）"
     $all = @($r.Rows)
     $extra = @(
@@ -1433,9 +1650,9 @@ function Invoke-UserSearchMenu {
         $kw = Read-Choice '請輸入關鍵字（帳號、姓名、部門、職稱、Email、員工編號），直接按 Enter 返回'
         if (-not $kw) { return }
         try { $found = @(Find-ADUserByKeyword -Keyword $kw) }
-        catch { Write-Host "搜尋失敗：$($_.Exception.Message)" -ForegroundColor Red; continue }
-        if ($found.Count -eq 0) { Write-Host "找不到符合「$kw」的使用者。" -ForegroundColor Yellow; continue }
-        if ($found.Count -ge $script:MaxSearchResults) { Write-Host "符合的帳號太多，只列出前 $($script:MaxSearchResults) 筆，可輸入更完整的關鍵字。" -ForegroundColor Yellow }
+        catch { Write-Status "搜尋失敗：$($_.Exception.Message)" -Level Error; continue }
+        if ($found.Count -eq 0) { Write-Status "找不到符合「$kw」的使用者。" -Level Warn; continue }
+        if ($found.Count -ge $script:MaxSearchResults) { Write-Status "符合的帳號太多，只列出前 $($script:MaxSearchResults) 筆，可輸入更完整的關鍵字。" -Level Warn }
         $title = "搜尋結果：$kw"
         Show-Result -Rows $found -Kind User -Title $title
         $extra = @(
@@ -1456,12 +1673,12 @@ function Show-UserPathAccess {
     <# 顯示反查結果並詢問是否匯出 #>
     param([object[]]$Rows, [string]$User, [string]$Path)
     if ($Rows.Count -eq 0) {
-        Write-Host "在此路徑上找不到 $User 可取得權限的項目（依 AD 群組判斷）。" -ForegroundColor Yellow
+        Write-Status "在此路徑上找不到 $User 可取得權限的項目（依 AD 群組判斷）。" -Level Warn
         return
     }
     Show-Result -Rows $Rows -Kind Access -Title "使用者 $User 在 $Path 的權限來源"
     if (@($Rows | Where-Object { $_.AccessType -eq '拒絕' -and $_.Certainty -eq '確定' }).Count -gt 0) {
-        Write-Host '注意：此使用者有符合的「拒絕」權限，實際可能無法存取。' -ForegroundColor Yellow
+        Write-Status '注意：此使用者有符合的「拒絕」權限，實際可能無法存取。' -Level Warn
     }
     if (Read-YesNo -Prompt '要匯出這份結果嗎？' -Default $false) {
         Read-ExportChoice -Rows $Rows -Kind Access -Title "使用者權限反查_$User" -Subtitle $Path
@@ -1478,7 +1695,7 @@ function Invoke-UserPathAccessMenu {
         $rows = @(Find-UserPathAccess -Path $path -User $u)
         Show-UserPathAccess -Rows $rows -User $sam -Path $path
     }
-    catch { Write-Host "反查失敗：$($_.Exception.Message)" -ForegroundColor Red }
+    catch { Write-Status "反查失敗：$($_.Exception.Message)" -Level Error }
 }
 
 function Invoke-ComputerMenu {
@@ -1494,22 +1711,22 @@ function Invoke-GroupUsageMenu {
     $depth = Read-DepthInput -Default 3 -Min 0
     $inherit = Read-YesNo -Prompt '是否也列出「繼承」來的權限？（選否只列出明確設定的資料夾，結果較精簡）' -Default $false
     try { $rows = @(Find-GroupFolderUsage -Group $g.DistinguishedName -Path $path -Depth $depth -IncludeInherited:$inherit) }
-    catch { Write-Host "查詢失敗：$($_.Exception.Message)" -ForegroundColor Red; return }
+    catch { Write-Status "查詢失敗：$($_.Exception.Message)" -Level Error; return }
     $title = "群組 $($g.Name) 的權限位置：$path"
-    if ($rows.Count -eq 0) { Write-Host "在 $path（往下 $depth 層）找不到給「$($g.Name)」的權限。" -ForegroundColor Yellow; return }
-    Write-Host '提示：只比對這個群組本身；若它被加進其他群組，透過上層群組取得的權限不會列出。' -ForegroundColor DarkGray
+    if ($rows.Count -eq 0) { Write-Status "在 $path（往下 $depth 層）找不到給「$($g.Name)」的權限。" -Level Warn; return }
+    Write-Status '提示：只比對這個群組本身；若它被加進其他群組，透過上層群組取得的權限不會列出。' -Level Hint
     Show-Result -Rows $rows -Kind Usage -Title $title
     Invoke-ListMenu -Rows $rows -Kind Usage -Title $title -ExportTitle "群組權限位置_$($g.Name)" -Subtitle "$path（深度 $depth）"
 }
 
 function Invoke-PathMenu {
     param([string]$Path)
-    Write-Host "讀取「$Path」的權限中..." -ForegroundColor Gray
+    Write-Status "讀取「$Path」的權限中..." -Level Info
     try {
         $result = Get-PathPermission -Path $Path
     }
     catch {
-        Write-Host "讀取權限失敗：$($_.Exception.Message)" -ForegroundColor Red
+        Write-Status "讀取權限失敗：$($_.Exception.Message)" -Level Error
         return 'next'
     }
     $perms = @($result.Permissions)
@@ -1518,23 +1735,22 @@ function Invoke-PathMenu {
 
     $showSummary = {
         Write-Host ''
-        Write-Host $sub -ForegroundColor Cyan
+        Write-Status $sub -Level Note
         Show-Result -Rows $perms -Kind Permission -Title $title
         $orphans = @($perms | Where-Object { $_.Category -eq '孤立 SID' })
-        if ($orphans.Count -gt 0) { Write-Host "注意：有 $($orphans.Count) 筆孤立 SID（帳戶可能已刪除）。" -ForegroundColor Yellow }
+        if ($orphans.Count -gt 0) { Write-Status "注意：有 $($orphans.Count) 筆孤立 SID（帳戶可能已刪除）。" -Level Warn }
         $denies = @($perms | Where-Object { $_.AccessType -eq '拒絕' })
-        if ($denies.Count -gt 0) { Write-Host "注意：有 $($denies.Count) 筆「拒絕」權限，拒絕會優先於允許。" -ForegroundColor Yellow }
+        if ($denies.Count -gt 0) { Write-Status "注意：有 $($denies.Count) 筆「拒絕」權限，拒絕會優先於允許。" -Level Warn }
     }
     & $showSummary
 
     while ($true) {
-        Write-Host ''
-        Write-Host '[1] 選擇群組查看成員  [2] 反查使用者權限  [3] 掃描子資料夾  [4] 匯出權限清單  [5] 重新顯示  [N] 查詢其他路徑  [B] 回主選單  [Q] 離開'
+        Show-Options @('1|選擇群組查看成員', '2|反查使用者權限', '3|掃描子資料夾', '4|匯出權限清單', '5|重新顯示', 'N|查詢其他路徑', 'B|回主選單', 'Q|離開')
         $c = (Read-Choice '請選擇').ToUpperInvariant()
         switch ($c) {
             '1' {
                 $groups = @($perms | Where-Object { $_.CanExpand })
-                if ($groups.Count -eq 0) { Write-Host '這個路徑上沒有可展開的 AD 群組。' -ForegroundColor Yellow; break }
+                if ($groups.Count -eq 0) { Write-Status '這個路徑上沒有可展開的 AD 群組。' -Level Warn; break }
                 $g = Select-OneItem -Items $groups -Kind Permission -Title '請選擇要查詢的群組'
                 if ($g) {
                     $gid = if ($g.DistinguishedName) { $g.DistinguishedName } else { $g.SamAccountName }
@@ -1549,12 +1765,12 @@ function Invoke-PathMenu {
                     $rows = @(Find-UserPathAccess -Path $Path -User $u -PermissionResult $result)
                     Show-UserPathAccess -Rows $rows -User $sam -Path $Path
                 }
-                catch { Write-Host "反查失敗：$($_.Exception.Message)" -ForegroundColor Red }
+                catch { Write-Status "反查失敗：$($_.Exception.Message)" -Level Error }
             }
             '3' {
                 $depth = Read-DepthInput -Default 3 -Min 1
                 $rows = @(Get-SubfolderPermissionDiff -Path $Path -Depth $depth)
-                if ($rows.Count -eq 0) { Write-Host '所有子資料夾都是單純繼承上層權限，沒有差異。' -ForegroundColor Green }
+                if ($rows.Count -eq 0) { Write-Status '所有子資料夾都是單純繼承上層權限，沒有差異。' -Level Ok }
                 else {
                     Show-Result -Rows $rows -Kind Scan -Title "子資料夾權限差異：$Path"
                     if (Read-YesNo -Prompt '要匯出這份結果嗎？' -Default $false) { Read-ExportChoice -Rows $rows -Kind Scan -Title '子資料夾權限差異' -Subtitle $Path }
@@ -1565,7 +1781,7 @@ function Invoke-PathMenu {
             'N' { return 'next' }
             'B' { return 'menu' }
             'Q' { return 'quit' }
-            default { Write-Host '請輸入選單上的代號。' -ForegroundColor Yellow }
+            default { Write-Status '請輸入選單上的代號。' -Level Warn }
         }
     }
 }
@@ -1579,7 +1795,7 @@ function Invoke-PathFlow {
             if (-not $Path) { return 'menu' }
         }
         elseif (-not (Test-Path -LiteralPath $Path)) {
-            Write-Host "找不到路徑或沒有讀取權限：$Path" -ForegroundColor Red
+            Write-Status "找不到路徑或沒有讀取權限：$Path" -Level Error
             $Path = $null
             continue
         }
@@ -1591,17 +1807,24 @@ function Invoke-PathFlow {
 }
 
 function Show-MainMenu {
-    Write-Host ''
-    Write-Host '================ 主選單 ================' -ForegroundColor Cyan
-    Write-Host '  [1] 查詢路徑權限（誰有這個資料夾的權限）'
-    Write-Host '  [2] 查群組成員'
-    Write-Host '  [3] 查使用者資訊與所屬群組'
-    Write-Host '  [4] 比較兩位使用者的群組'
-    Write-Host '  [5] 搜尋帳號（姓名、部門、職稱、Email…）'
-    Write-Host '  [6] 反查使用者在某個路徑的權限'
-    Write-Host '  [7] 查電腦帳號'
-    Write-Host '  [8] 查群組被用在哪些資料夾'
-    Write-Host '  [Q] 離開'
+    Write-Section '主選單'
+    $items = @(
+        [pscustomobject]@{ Key = '1'; Label = '查詢路徑權限'; Hint = '誰有這個資料夾的權限' }
+        [pscustomobject]@{ Key = '2'; Label = '查群組成員'; Hint = '輸入群組名稱，列出成員' }
+        [pscustomobject]@{ Key = '3'; Label = '查使用者'; Hint = '個人資料與所屬群組' }
+        [pscustomobject]@{ Key = '4'; Label = '比較兩位使用者'; Hint = '群組差異（新人權限比照同事）' }
+        [pscustomobject]@{ Key = '5'; Label = '搜尋帳號'; Hint = '用姓名、部門、職稱、Email 找人' }
+        [pscustomobject]@{ Key = '6'; Label = '反查使用者權限'; Hint = '某人在某個路徑有什麼權限' }
+        [pscustomobject]@{ Key = '7'; Label = '查電腦帳號'; Hint = '作業系統、IP、狀態、所屬群組' }
+        [pscustomobject]@{ Key = '8'; Label = '查群組使用處'; Hint = '群組被用在哪些資料夾' }
+        [pscustomobject]@{ Key = 'Q'; Label = '離開'; Hint = '' }
+    )
+    foreach ($it in $items) {
+        Write-Host '  [' -NoNewline
+        Write-Host $it.Key -NoNewline -ForegroundColor Yellow
+        Write-Host ('] ' + (Format-Cell $it.Label 18)) -NoNewline
+        Write-Host $it.Hint -ForegroundColor DarkGray
+    }
 }
 
 function Start-ADPermissionQuery {
@@ -1614,14 +1837,17 @@ function Start-ADPermissionQuery {
     [CmdletBinding()]
     param([string]$Path)
 
-    Write-Host '========================================' -ForegroundColor Cyan
-    Write-Host ' AD 權限查詢工具（唯讀，不會修改 AD）' -ForegroundColor Cyan
-    Write-Host '========================================' -ForegroundColor Cyan
+    $bar = '=' * 52
+    Write-Host ''
+    Write-Host "  $bar" -ForegroundColor Cyan
+    Write-Host '    AD 權限查詢工具（唯讀，不會修改 AD）' -ForegroundColor Cyan
+    Write-Host "  $bar" -ForegroundColor Cyan
+    Write-Host '    任何清單都可以篩選、匯出；名稱可以只輸入一部分' -ForegroundColor DarkGray
 
     if (-not (Get-Command -Name Get-ADUser -ErrorAction SilentlyContinue)) {
-        Write-Host '找不到 ActiveDirectory 模組。請先安裝 RSAT「Active Directory 網域服務工具」。' -ForegroundColor Red
-        Write-Host '  Windows 10/11：設定 > 應用程式 > 選用功能 > 新增「RSAT: Active Directory Domain Services...」'
-        Write-Host '  Windows Server：Install-WindowsFeature RSAT-AD-PowerShell（需由系統管理員安裝）'
+        Write-Status '找不到 ActiveDirectory 模組。請先安裝 RSAT「Active Directory 網域服務工具」。' -Level Error
+        Write-Status 'Windows 10/11：設定 > 應用程式 > 選用功能 > 新增「RSAT: Active Directory Domain Services...」' -Level Hint
+        Write-Status 'Windows Server：Install-WindowsFeature RSAT-AD-PowerShell（需由系統管理員安裝）' -Level Hint
         return
     }
 
@@ -1642,7 +1868,7 @@ function Start-ADPermissionQuery {
             '7' { Invoke-ComputerMenu }
             '8' { Invoke-GroupUsageMenu }
             'Q' { return }
-            default { Write-Host '請輸入選單上的代號。' -ForegroundColor Yellow }
+            default { Write-Status '請輸入選單上的代號。' -Level Warn }
         }
     }
 }

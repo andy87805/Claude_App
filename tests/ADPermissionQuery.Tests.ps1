@@ -391,10 +391,84 @@ Describe 'ADPermissionQuery' {
         }
     }
 
+
+    Context '主控台排版' {
+        It '中文與全形符號算 2 格寬' {
+            InModuleScope ADPermissionQuery {
+                Get-DisplayWidth 'abc' | Should -Be 3
+                Get-DisplayWidth '王小美' | Should -Be 6
+                Get-DisplayWidth '（巢狀群組）' | Should -Be 12
+                Get-DisplayWidth 'A 財務部' | Should -Be 8
+                Get-DisplayWidth '' | Should -Be 0
+            }
+        }
+        It '補空白與截斷都符合指定寬度；路徑可保留後段' {
+            InModuleScope ADPermissionQuery {
+                Format-Cell '王小美' 10 | Should -Be '王小美    '
+                $t = Format-Cell '此資料夾、子資料夾及檔案' 11
+                Get-DisplayWidth $t | Should -Be 11
+                $t | Should -Match '^此資料夾\.\. $'
+                $p = Format-Cell '\\fs01\share\財務部\2025' 14 -KeepTail
+                Get-DisplayWidth $p | Should -Be 14
+                $p | Should -Match '^\.\..*2025$'
+                Format-Cell "a`r`nb" 5 | Should -Be 'a b  '
+            }
+        }
+        It '在 80 欄寬的視窗中，每一行都不超出寬度，且各欄位置對齊' {
+            $global:Lines = New-Object System.Collections.Generic.List[string]
+            $global:Cur = ''
+            Mock -ModuleName ADPermissionQuery Write-Host {
+                if ($NoNewline) { $global:Cur += [string]$Object } else { $global:Lines.Add($global:Cur + [string]$Object); $global:Cur = '' }
+            }
+            Mock -ModuleName ADPermissionQuery Get-ConsoleWidth { 80 }
+            $m = Get-GroupMemberDetail -Identity 'Finance-RW' -Recurse
+            InModuleScope ADPermissionQuery -Parameters @{ Rows = $m } { param($Rows) Show-Table -Rows $Rows -Kind Member -Title '測試' }
+            ($global:Lines -join "`n") | Should -Match '視窗太窄，未顯示：'
+            $table = @($global:Lines | Where-Object { $_ -match '^  \S' -and $_ -notmatch '^  視窗太窄' })
+            $table.Count | Should -Be 7     # 標題列 + 分隔線 + 5 筆
+            foreach ($l in $table) {
+                InModuleScope ADPermissionQuery -Parameters @{ L = $l } { param($L) Get-DisplayWidth $L.TrimEnd() } | Should -BeLessOrEqual 79
+            }
+            # 分隔線的每一段起點 = 每一欄的起點；資料列在這些位置前一格必須是空白（代表沒有錯位）
+            $sep = $table[1]
+            $starts = @([regex]::Matches($sep, '(?<=  )-') | ForEach-Object Index)
+            foreach ($l in $table[2..($table.Count - 1)]) {
+                $pos = 0; $cols = @{}
+                foreach ($ch in $l.ToCharArray()) {
+                    $cols[$pos] = $ch
+                    $pos += InModuleScope ADPermissionQuery -Parameters @{ C = [string]$ch } { param($C) Get-DisplayWidth $C }
+                }
+                foreach ($st in $starts) { if ($cols.ContainsKey($st - 1)) { $cols[$st - 1] | Should -Be ' ' } }
+            }
+            ($global:Lines -join "`n") | Should -Match '王小美'
+        }
+        It '沒有資料時顯示提示' {
+            $global:Lines = New-Object System.Collections.Generic.List[string]
+            Mock -ModuleName ADPermissionQuery Write-Host { $global:Lines.Add([string]$Object) }
+            InModuleScope ADPermissionQuery { Show-Table -Rows @() -Kind Member -Title '空的' }
+            ($global:Lines -join "`n") | Should -Match '沒有資料'
+        }
+        It '超過一頁時分頁，輸入 Q 停止顯示' {
+            $global:Lines = New-Object System.Collections.Generic.List[string]
+            Mock -ModuleName ADPermissionQuery Write-Host { $global:Lines.Add([string]$Object) }
+            Mock -ModuleName ADPermissionQuery Get-ConsoleHeight { 20 }
+            Mock -ModuleName ADPermissionQuery Read-Host { 'q' }
+            $rows = 1..40 | ForEach-Object { [pscustomobject]@{ Name = "使用者$_"; SamAccountName = "u$_"; ObjectClass = '使用者'; Status = '正常' } }
+            InModuleScope ADPermissionQuery -Parameters @{ Rows = $rows } { param($Rows) Show-Table -Rows $Rows -Kind Member }
+            Should -Invoke -ModuleName ADPermissionQuery Read-Host -Times 1 -Exactly
+            ($global:Lines -join "`n") | Should -Match '其餘 25 筆未顯示'
+        }
+    }
+
     Context '互動式流程（模擬使用者輸入）' {
         BeforeEach {
             $global:HostOutput = New-Object System.Collections.Generic.List[string]
-            Mock -ModuleName ADPermissionQuery Write-Host { $global:HostOutput.Add([string]$Object) }
+            # 把 -NoNewline 的片段組回完整的一行，方便比對畫面文字
+            $global:HostLine = ''
+            Mock -ModuleName ADPermissionQuery Write-Host {
+                if ($NoNewline) { $global:HostLine += [string]$Object }
+                else { $global:HostOutput.Add($global:HostLine + [string]$Object); $global:HostLine = '' }
+            }
             # 其他 Test-Path（log / 匯出資料夾）交給真正的指令（Pester 6 不會自動退回原指令）
             Mock -ModuleName ADPermissionQuery Test-Path { Microsoft.PowerShell.Management\Test-Path @PesterBoundParameters }
             Mock -ModuleName ADPermissionQuery Test-Path -ParameterFilter { $LiteralPath -eq $global:SharePath } { $true }

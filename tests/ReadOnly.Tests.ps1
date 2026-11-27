@@ -73,7 +73,7 @@ Describe '唯讀檢查：<Name>' -ForEach $Files {
                 if ($m -in $forbidden) {
                     # .Add() 只允許用在本機的 List / HashSet / 字典 / StringBuilder
                     $target = $c.Expression.Extent.Text
-                    if ($m -eq 'Add' -and $target -match '^\$(names|results|rows|flags|groupSids|visited|global:\w+)$') { continue }
+                    if ($m -eq 'Add' -and $target -match '^\$(names|results|rows|flags|groupSids|visited|cols|global:\w+)$') { continue }
                     "$target.$m()（第 $($c.Extent.StartLineNumber) 行）"
                 }
             })
